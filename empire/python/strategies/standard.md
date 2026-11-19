@@ -1,14 +1,11 @@
-# Taktik-Ratschläge für den Feldherrn (Linientaktik, 18. Jahrhundert)
-
-Nur die Spiegelstriche gehen an das Modell. Gute Ratschläge, keine Gesetze.
-
-- Form one continuous line of line infantry with small gaps; keep the flanks anchored on terrain or covered by cavalry.
-- Let the enemy walk into your volleys: when defending, hold the line and fire; advance only when your artillery has softened him or he is weaker.
-- Approach in line, not in column, once you are within artillery range of the enemy; columns suffer terribly from cannon fire.
-- Place artillery behind or between the infantry with a clear line of fire, and protect it from cavalry with keep_range or nearby infantry.
-- Screen the line with light infantry (skirmish on) in front; pull them back behind the line before the main lines meet.
-- Keep cavalry out of musket range on the flanks as a reserve; use it to hit the flank or rear of infantry already engaged, to kill artillery, or to chase routing units. Do not charge fresh, formed infantry from the front.
-- Concentrate fire: several units shooting at one enemy unit break it faster than spreading fire.
-- When an enemy unit routs, do not chase it far with infantry; turn on the next unit.
-- Watch enemy cavalry: if it moves round a flank, turn the end units of the line or give a reserve a reflex to charge it.
-- If you are clearly weaker, a shorter line with secured flanks and artillery support is better than a thin long one.
+- Bilde mit der Linieninfanterie eine durchgehende Linie (move, shape line, spacing_m etwa 5) und rücke in kurzen Etappen von höchstens 100 m vor, damit die Linie geschlossen bleibt.
+- Stelle die Kavallerie an beiden Flügeln etwa 40 m neben die Linienenden, mit engage_within_m 80, damit die Flanken gedeckt sind.
+- Verteidigung: Halte die Linie (halt) und lass den Gegner heranlaufen. Rücke erst vor, wenn die Artillerie mindestens 20 s auf seine Infanterie gefeuert hat oder er weniger Einheiten hat als du. Warte höchstens bis etwa zwei Drittel der Schlachtzeit, danach greife an.
+- Platziere die Artillerie 30 m hinter der Linie oder zwischen den Bataillonen, mit freiem Schussfeld, und setze keep_range_m 60 gegen Kavallerie. Lege die Infanterie nahe an die Geschütze.
+- Stelle die leichte Infanterie 80 m vor der Linie auf, skirmish an. Reflex: wenn Feindinfanterie näher als 100 m kommt, ziehe sie hinter die Linie (move).
+- Halte die Kavallerie mehr als 250 m vom Feind, außer beim Angriff. Greife damit nur Infanterie an, die schon im Feuergefecht steht, in Flanke oder Rücken, oder Artillerie oder fliehende Einheiten. Greife nie frische, geschlossene Infanterie von vorn an.
+- Konzentriere das Feuer: Lass mindestens drei Einheiten dasselbe Ziel angreifen und wechsle das Ziel nur, wenn es bricht.
+- Wenn eine Feindeinheit flieht, verfolge sie mit Infanterie höchstens 50 m. Danach wähle sofort die nächste Einheit als Ziel. Nur die Kavallerie darf Fliehende weiter jagen.
+- Wenn feindliche Kavallerie seitlich um die Flanke zieht, setze einen Reflex für die Reservekavallerie: Gegner innerhalb von 150 m, dann attack. Drehe die Endeinheiten der Linie zur Flanke.
+- Wenn du deutlich schwächer bist, bilde eine kürzere Linie mit Flügeln hinter der Artillerie und keep_range_m für die Geschütze, statt eine dünne lange Linie zu ziehen.
+- Bei Konflikt zwischen Zeilen: zuerst Flanken und Artillerie schützen, dann Feuer konzentrieren, dann vorrücken.
