@@ -144,7 +144,7 @@ class App(tk.Tk):
         root = ttk.Frame(self, padding=8)
         root.pack(fill="both", expand=True)
         root.columnconfigure(0, weight=1)
-        root.rowconfigure(5, weight=1)
+        root.rowconfigure(3, weight=1)
 
         # Zugang
         f = ttk.LabelFrame(root, text="Zugang zu Claude", padding=6)
@@ -198,9 +198,13 @@ class App(tk.Tk):
         for v in (self.model_var, self.effort_var, self.int_var, self.cint_var):
             v.trace_add("write", lambda *a: self._schedule_save())
 
-        # Strategie + Zusatzbefehle
-        f = ttk.LabelFrame(root, text="Strategie (System-Prompt)", padding=6)
-        f.grid(row=2, column=0, sticky="ew", **pad)
+        # Prompts als Registerkarten (Befehle | Strategie | Aufstellung), damit das Protokoll Platz behaelt
+        self.nb = ttk.Notebook(root)
+        self.nb.grid(row=2, column=0, sticky="ew", **pad)
+
+        # Strategie
+        f = ttk.Frame(self.nb, padding=6)
+        tab_strategy = f
         f.columnconfigure(1, weight=1)
         ttk.Label(f, text="Vorlage:").grid(row=0, column=0, sticky="w")
         self.strat_var = tk.StringVar()
@@ -216,15 +220,15 @@ class App(tk.Tk):
         ttk.Button(bb, text="Verwerfen", command=self._strategy_discard).pack(side="left", padx=2)
         ttk.Button(bb, text="Prüfen & verbessern…",
                    command=lambda: self._review("strategy", self.strat_text, "Strategie")).pack(side="left", padx=(10, 2))
-        self.strat_text = self._text(f, 8, "")
+        self.strat_text = self._text(f, 9, "")
         self.strat_text.grid(row=1, column=0, columnspan=3, sticky="ew", pady=4)
         ttk.Label(f, text="Vorlage = allgemeine Ratschläge für beide Seiten (nur Zeilen mit „- “). Verbindliche Taktik "
-                          "gehört in die Befehlsfelder unten. Alles wirkt ab dem nächsten Plan, auch während der Schlacht.",
+                          "gehört in den Reiter „Befehle“. Alles wirkt ab dem nächsten Plan, auch während der Schlacht.",
                   foreground="#555").grid(row=2, column=0, columnspan=3, sticky="w")
 
         # Befehle je Seite
-        f = ttk.LabelFrame(root, text="Befehle (verbindlich – gehen vor die Strategie-Ratschläge)", padding=6)
-        f.grid(row=3, column=0, sticky="ew", **pad)
+        f = ttk.Frame(self.nb, padding=6)
+        tab_orders = f
         f.columnconfigure(0, weight=1)
         f.columnconfigure(1, weight=1)
         hp = ttk.Frame(f)
@@ -233,9 +237,9 @@ class App(tk.Tk):
         he = ttk.Frame(f)
         he.grid(row=0, column=1, sticky="ew", padx=(8, 0))
         ttk.Label(he, text="Gegner (wenn die KI ihn führt):").pack(side="left")
-        self.orders_player_text = self._text(f, 6, self.s.get("orders_player", ""))
+        self.orders_player_text = self._text(f, 10, self.s.get("orders_player", ""))
         self.orders_player_text.grid(row=1, column=0, sticky="ew", pady=4)
-        self.orders_enemy_text = self._text(f, 6, self.s.get("orders_enemy", ""))
+        self.orders_enemy_text = self._text(f, 10, self.s.get("orders_enemy", ""))
         self.orders_enemy_text.grid(row=1, column=1, sticky="ew", pady=4, padx=(8, 0))
         ttk.Button(hp, text="Prüfen & verbessern…",
                    command=lambda: self._review("orders_player", self.orders_player_text, "Befehle meine Armee")).pack(side="right")
@@ -243,8 +247,8 @@ class App(tk.Tk):
                    command=lambda: self._review("orders_enemy", self.orders_enemy_text, "Befehle Gegner")).pack(side="right")
 
         # Aufstellung
-        f = ttk.LabelFrame(root, text="Aufstellung (Prompt für „Aufstellung übernehmen“ – wird bei jedem Auslösen neu gelesen)", padding=6)
-        f.grid(row=4, column=0, sticky="ew", **pad)
+        f = ttk.Frame(self.nb, padding=6)
+        tab_deploy = f
         f.columnconfigure(0, weight=1)
         hd = ttk.Frame(f)
         hd.grid(row=0, column=0, sticky="ew")
@@ -252,12 +256,18 @@ class App(tk.Tk):
                            "rechts, Kavallerie als Reserve hinter dem linken Flügel“", foreground="#555").pack(side="left")
         ttk.Button(hd, text="Prüfen & verbessern…",
                    command=lambda: self._review("deploy", self.deploy_text, "Aufstellungsprompt")).pack(side="right")
-        self.deploy_text = self._text(f, 4, self.s.get("deploy_prompt", ""))
+        self.deploy_text = self._text(f, 10, self.s.get("deploy_prompt", ""))
         self.deploy_text.grid(row=1, column=0, sticky="ew", pady=4)
+
+        self.nb.add(tab_orders, text="  Befehle (verbindlich)  ")
+        self.nb.add(tab_strategy, text="  Strategie (Ratschläge)  ")
+        self.nb.add(tab_deploy, text="  Aufstellung (F9)  ")
+        ttk.Label(tab_deploy, text="Wird bei jedem „Aufstellung übernehmen“ neu gelesen.", foreground="#777").grid(
+            row=2, column=0, sticky="w")
 
         # Steuerung + Protokoll
         f = ttk.LabelFrame(root, text="Feldherr", padding=6)
-        f.grid(row=5, column=0, sticky="nsew", **pad)
+        f.grid(row=3, column=0, sticky="nsew", **pad)
         f.columnconfigure(0, weight=1)
         f.rowconfigure(2, weight=1)
         bar = ttk.Frame(f)
