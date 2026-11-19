@@ -19,3 +19,4 @@ empire/python/logs/
 # Spieldateien niemals einchecken
 *.pack
 Empire.exe
+empire/python/settings.json.bak

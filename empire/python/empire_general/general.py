@@ -61,7 +61,12 @@ reports are not kept. Write what you are trying and what the enemy keeps doing.
 
 Attack or defend: battles have a time limit. Units standing in musket or canister range lose men every second; \
 standing still out of range costs nothing. Cavalry going round a flank (watch the enemy's direction and speed) \
-hits the side or rear.\
+hits the side or rear.
+
+Limits of your command (do not plan or promise these, they cannot be ordered): the artillery's ammunition type \
+(round shot, canister, shell) and the infantry's formation type (square, column, fire by rank) are chosen by the \
+game's own unit behaviour. Artillery firing at a target automatically ceases fire while your own units are within \
+50 m of that target, and resumes when they are clear.\
 """
 
 
@@ -70,18 +75,35 @@ def rule_lines(text: str) -> str:
     return "\n".join(line.strip() for line in text.splitlines() if line.strip().startswith(("- ", "* ")))
 
 
-def system_prompt(rules: str = "", strategy: str = "", instructions: str = "") -> str:
-    """Bleibt fuer die ganze Schlacht byte-gleich, damit der Prompt-Cache greift."""
+def side_text(role: str) -> str:
+    """Wen das Modell fuehrt - steht im System-Prompt, damit es seine Befehle eindeutig zuordnen kann."""
+    if role == "player":
+        return ("YOUR SIDE: you command the PLAYER'S ARMY - the army of the human who gave you the orders below. "
+                "The enemy army is commanded by someone else.")
+    if role == "enemy":
+        return ("YOUR SIDE: you command the ENEMY ARMY - the opponent of the human player. "
+                "The orders below are the ones meant for the enemy side.")
+    return ""
+
+
+def system_prompt(rules: str = "", strategy: str = "", orders: str = "", role: str = "") -> str:
+    """Wird vor jedem Plan neu gebaut (Strategie/Befehle koennen sich aendern). Solange sich nichts aendert, bleibt
+    er byte-gleich und kommt aus dem Prompt-Cache."""
     out = SYSTEM_PROMPT
-    if instructions.strip():
-        out += ("\n\nORDERS FROM YOUR SOVEREIGN for this battle (follow them unless the battle would be lost):\n"
-                + instructions.strip())
+    if side_text(role):
+        out += "\n\n" + side_text(role)
+    if orders.strip():
+        out += ("\n\nORDERS FROM YOUR SOVEREIGN for this battle - BINDING. Follow them to the letter and put them above "
+                "the strategy advice and above your own judgement of the situation (also when you are much stronger). "
+                "Deviate only when following them would clearly lose the battle, and then say so in your note. "
+                "Respect time limits in them (\"for the first N minutes\") using the TIME in each report:\n"
+                + orders.strip())
     if rule_lines(rules):
         out += ("\n\nGAME RULES: facts about the game and hard rules of your command. Break one only when the battle "
                 "is otherwise lost:\n" + rule_lines(rules))
     if rule_lines(strategy):
-        out += ("\n\nSTRATEGY: advice from your commander, sound in most situations. Depart from it when the "
-                "situation clearly calls for something else:\n" + rule_lines(strategy))
+        out += ("\n\nSTRATEGY: general advice, sound in most situations. The ORDERS above take precedence wherever "
+                "they say something different:\n" + rule_lines(strategy))
     return out
 
 
@@ -101,16 +123,16 @@ class ClaudeGeneral:
         self.client = anthropic.Anthropic(max_retries=2, timeout=60.0)
         self.model = model
         self.effort = effort
-        self.system = system_prompt(rules, strategy, instructions)
+        self.system = system_prompt(rules, strategy, instructions)   # Standard; der Feldherr uebergibt pro Plan einen aktuellen
         self.last_usage: dict | None = None
 
-    def plan(self, report: str, world: World, alliance: int) -> Plan:
+    def plan(self, report: str, world: World, alliance: int, system: str | None = None) -> Plan:
         a = self.anthropic
         try:
             resp = self.client.beta.messages.parse(
                 model=self.model,
                 max_tokens=16000,
-                system=[{"type": "text", "text": self.system, "cache_control": {"type": "ephemeral"}}],
+                system=[{"type": "text", "text": system or self.system, "cache_control": {"type": "ephemeral"}}],
                 messages=[{"role": "user", "content": report}],
                 output_format=WirePlan,   # vereinfachtes Schema, siehe plan.py
                 output_config={"effort": self.effort},
@@ -135,16 +157,16 @@ class ClaudeGeneral:
             raise RuntimeError(f"kein gueltiger Plan (stop_reason {resp.stop_reason})")
         return to_plan(resp.parsed_output)
 
-    def plan_deployment(self, report: str, world: World, alliance: int) -> Plan:
+    def plan_deployment(self, report: str, world: World, alliance: int, system: str | None = None) -> Plan:
         """Aufstellung: gleicher Aufruf, der Bericht (describe_deployment) enthaelt Aufgabe und Aufstellungsprompt."""
-        return self.plan(report, world, alliance)
+        return self.plan(report, world, alliance, system)
 
 
 class RuleGeneral:
     """Ohne Sprachmodell: Artillerie haelt und feuert, Infanterie rueckt in Linie bis 120 m vor und greift dann
     die naechste Einheit an, Kavallerie schuetzt die Flanken. Fuer Offline-Tests der ganzen Kette."""
 
-    def plan(self, report: str, world: World, alliance: int) -> Plan:
+    def plan(self, report: str, world: World, alliance: int, system: str | None = None) -> Plan:
         mine = world.side(alliance)
         foes = world.enemies(alliance)
         cm, ce = centroid(mine), centroid(foes)
@@ -180,7 +202,7 @@ class RuleGeneral:
         return Plan(intent=f"advance the line to musket range ({d:.0f} m apart), artillery holds",
                     note="rule-based general", groups=groups)
 
-    def plan_deployment(self, report: str, world: World, alliance: int) -> Plan:
+    def plan_deployment(self, report: str, world: World, alliance: int, system: str | None = None) -> Plan:
         """Ohne Modell: Infanterie-Linie am Heeresschwerpunkt mit Front zum Feind, Artillerie 40 m dahinter,
         Kavallerie geteilt auf beide Fluegel."""
         import math
@@ -216,7 +238,7 @@ class RuleGeneral:
                     note="rule-based deployment", groups=groups)
 
 
-def make_general(backend: str, model: str | None, effort: str, rules: str, strategy: str,
+def make_general(backend: str, model: str | None, effort: str, rules: str = "", strategy: str = "",
                  instructions: str = "") -> General:
     if backend == "claude":
         return ClaudeGeneral(model or "claude-opus-5-5", effort, rules, strategy, instructions)

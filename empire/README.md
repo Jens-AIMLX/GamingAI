@@ -60,8 +60,13 @@ Doppelklick auf `start_ui.bat` (oder `python python\ui.py`):
   *Prüfen* (kostenlose Abfrage der Modell-Liste).
 - **KI führt:** Gegner / meine Armee / beide / aus – gilt ab der nächsten Schlacht.
 - **Feldherr:** Claude Opus 5.5, Sonnet 5.5, Haiku 5.5 oder Regel-Feldherr; Denktiefe; Planungstakt.
-- **Strategie:** Vorlage wählen, bearbeiten, speichern oder als neue Vorlage anlegen; dazu freie
-  **Zusatzbefehle** für die nächste Schlacht.
+- **Strategie:** Vorlage mit allgemeinen Ratschlägen für beide Seiten wählen, bearbeiten, speichern oder als neue
+  Vorlage anlegen.
+- **Befehle – Meine Armee / Gegner:** verbindliche Taktik je Seite. Sie steht im System-Prompt vor den Ratschlägen
+  und gilt auch dann, wenn das Modell sich überlegen fühlt; das Modell erfährt außerdem, welche Seite es führt
+  (Spielerarmee oder Gegner).
+- Strategie, Befehle und Aufstellungsprompt werden **vor jedem Plan neu gelesen** – Änderungen wirken während der
+  laufenden Schlacht ab dem nächsten Plan.
 - **Aufstellung:** freier Prompt, wie aufgestellt werden soll (wird bei jedem Auslösen neu gelesen).
 - **▶ Starten** startet den Feldherrn, das Protokoll läuft live mit.
 - Alle Einstellungen, Prompts und ungespeicherte Strategie-Entwürfe werden laufend in `python\settings.json`
@@ -99,8 +104,14 @@ cd empire\python
 python commander.py                                  # Claude Opus 5.5, effort low
 python commander.py --model claude-sonnet-5-5        # schneller/günstiger
 python commander.py --backend rule                   # ohne Sprachmodell
-python commander.py --strategy strategies\defensiv.md --instructions meine_befehle.txt
+python commander.py --strategy strategies\defensiv.md --orders-player meine_armee.txt --orders-enemy gegner.txt
 ```
+
+### Was der Feldherr nicht befehlen kann
+
+Die Script-API des Spiels hat keine Befehle für die **Munitionsart** der Artillerie (Kartätschen, Spreng-/Vollkugel)
+und den **Formationstyp** der Infanterie (Karree, Kolonne) – das wählt das Einheitenverhalten des Spiels; das Modell
+weiß das. Automatisch: Artillerie stellt das Feuer ein, solange eigene Truppen näher als 50 m am Ziel sind.
 
 Welche Seite geführt wird, steht in `<Spiel>\ai_bridge\config.lua`. Jede Schlacht wird in
 `python\logs\battle_<Zeit>.jsonl` protokolliert (Lageberichte, Pläne, Fehler, Token-Verbrauch).

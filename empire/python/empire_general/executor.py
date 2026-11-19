@@ -55,6 +55,7 @@ class Executor:
         self.errors: list[str] = []
         self.plan_warnings: list[str] = []
         self._pending_flags: list[Order] = []
+        self.cease_fire: set[int] = set()           # Artillerie, die wegen eigener Truppen am Ziel nicht feuert
 
     # ---------- neuer Plan ----------
     def set_plan(self, plan: Plan, w: World) -> None:
@@ -134,6 +135,23 @@ class Executor:
             if cmd in ("fire_at_will", "skirmish", "withdraw") and self.fail_count[cmd] >= 2:
                 self.disabled.add(cmd)
 
+    SAFETY_M = 50.0
+
+    def _artillery_safety(self, u: Unit, want: tuple, w: World) -> tuple:
+        """Artillerie stellt das Feuer ein, solange eigene Einheiten naeher als SAFETY_M am Ziel sind
+        (Nahkampf, eigene Linie davor) - und feuert wieder, sobald es frei ist."""
+        if u.role != "artillery" or want[0] != "attack":
+            return want
+        t = w.units.get(want[1])
+        if not t:
+            return want
+        for o in w.side(self.alliance):
+            if o.id != u.id and o.role != "artillery" and dist(o.pos, t.pos) < self.SAFETY_M:
+                self.cease_fire.add(u.id)
+                return ("halt",)
+        self.cease_fire.discard(u.id)
+        return want
+
     # ---------- jede Sekunde ----------
     def tick(self, w: World) -> list[Order]:
         orders: list[Order] = self._pending_flags
@@ -148,6 +166,7 @@ class Executor:
                 want = self._desired(g, u, w, foes)
                 if want is None:
                     continue
+                want = self._artillery_safety(u, want, w)
                 if self._should_issue(u, want, w):
                     o = self._to_order(u, want, w)
                     if o:
@@ -294,6 +313,8 @@ class Executor:
                     s += f", {left:.0f} m to go" if left > ARRIVE_M else ", in place"
                 elif o.task == "attack" and o.target_unit is not None:
                     s += f" #{o.target_unit}"
+                if uid in self.cease_fire:
+                    s += " (HOLDING FIRE: own troops within 50 m of the target)"
                 out[uid] = s
         return out
 

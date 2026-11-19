@@ -35,7 +35,7 @@ from pathlib import Path
 from empire_bridge import EmpireBridge, Order
 from empire_general.describe import describe, describe_deployment
 from empire_general.executor import Executor
-from empire_general.general import General, load_text, make_general
+from empire_general.general import General, load_text, make_general, system_prompt
 from empire_general.plan import Plan
 from empire_general.world import World, centroid, dist
 
@@ -115,8 +115,9 @@ def read_command_file(path: Path) -> list[str]:
 class Side:
     """Ein gesteuertes Heer: Executor + Feldherr + Planungs-Thread."""
 
-    def __init__(self, alliance: int, general: General, log) -> None:
+    def __init__(self, alliance: int, general: General, log, system_for=None) -> None:
         self.alliance = alliance
+        self.system_for = system_for or (lambda a: None)   # liefert vor jedem Plan den aktuellen System-Prompt
         self.general = general
         self.ex = Executor(alliance)
         self.log = log
@@ -179,12 +180,14 @@ class Side:
         self.last_pos = {u.id: u.pos for u in w.units.values()}
         self.last_plan_t = w.time
         self.force_plan = False
-        self._run("plan", lambda r: self.general.plan(r, w, self.alliance), report, w.time)
+        system = self.system_for(self.alliance)
+        self._run("plan", lambda r: self.general.plan(r, w, self.alliance, system), report, w.time)
 
     def start_deploy(self, w: World, deploy_orders: str) -> None:
         report = describe_deployment(w, self.alliance, deploy_orders)
         self.deploy_done = False
-        self._run("deploy", lambda r: self.general.plan_deployment(r, w, self.alliance), report, w.time)
+        system = self.system_for(self.alliance)
+        self._run("deploy", lambda r: self.general.plan_deployment(r, w, self.alliance, system), report, w.time)
 
 
 def main() -> int:
@@ -196,15 +199,39 @@ def main() -> int:
     ap.add_argument("--close-interval", type=float, default=5.0, help="... wenn die Armeen nah sind")
     ap.add_argument("--once", action="store_true", help="nach einer Schlacht beenden")
     ap.add_argument("--strategy", default=str(HERE / "strategies" / "standard.md"), help="Strategie-Datei (Spiegelstriche)")
-    ap.add_argument("--instructions", default=None, help="Datei mit freien Anweisungen an den Feldherrn")
+    ap.add_argument("--instructions", default=None, help="Datei mit Befehlen fuer beide Seiten (aelteres Format)")
+    ap.add_argument("--orders-player", default=None, help="Datei mit verbindlichen Befehlen fuer die Armee des Spielers")
+    ap.add_argument("--orders-enemy", default=None, help="Datei mit verbindlichen Befehlen fuer die Gegnerarmee")
     ap.add_argument("--deploy-prompt", default=None, help="Datei mit dem Aufstellungsprompt (wird bei jedem Strg+Alt+A neu gelesen)")
     ap.add_argument("--no-hotkeys", action="store_true", help="keine globalen Hotkeys registrieren")
     ap.add_argument("--hotkeys", default=DEFAULT_HOTKEYS, help=f"z. B. '{DEFAULT_HOTKEYS}' oder 'deploy=Strg+Shift+F9,...'")
     args = ap.parse_args()
 
-    rules, strategy = load_text(HERE / "rules.md"), load_text(Path(args.strategy))
-    instructions = load_text(Path(args.instructions)) if args.instructions else ""
-    say(f"Strategie: {Path(args.strategy).stem}" + (f", Zusatzanweisungen: {len(instructions)} Zeichen" if instructions.strip() else ""))
+    rules = load_text(HERE / "rules.md")
+    seen_texts: dict[tuple, str] = {}
+
+    def texts() -> tuple[str, str, str, str]:
+        """Strategie und Befehle werden vor JEDEM Plan neu gelesen - Aenderungen im Steuerpult wirken sofort."""
+        both = load_text(Path(args.instructions)) if args.instructions else ""
+        player = load_text(Path(args.orders_player)) if args.orders_player else ""
+        enemy = load_text(Path(args.orders_enemy)) if args.orders_enemy else ""
+        return load_text(Path(args.strategy)), both, player, enemy
+
+    def system_for(a: int) -> str:
+        strategy, both, player, enemy = texts()
+        is_player = a == ((w.player_alliance if w else None) or 1)
+        role = "player" if is_player else "enemy"
+        orders = "\n".join(x.strip() for x in (both, player if is_player else enemy) if x.strip())
+        key = (a, role)
+        if seen_texts.get(key) != strategy + "|" + orders:
+            if key in seen_texts:
+                say(f"Allianz {a}: geaenderte Strategie/Befehle uebernommen (ab diesem Plan)")
+            seen_texts[key] = strategy + "|" + orders
+        return system_prompt(rules, strategy, orders, role)
+
+    strategy0, both0, player0, enemy0 = texts()
+    say(f"Strategie: {Path(args.strategy).stem}; Befehle Spielerarmee {len((both0 + player0).strip())} Zeichen, "
+        f"Gegnerarmee {len((both0 + enemy0).strip())} Zeichen (werden vor jedem Plan neu gelesen)")
     br = EmpireBridge()
     logdir = HERE / "logs"
     logdir.mkdir(exist_ok=True)
@@ -240,7 +267,9 @@ def main() -> int:
 
     def side_for(a: int) -> Side:
         if a not in sides:
-            sides[a] = Side(a, make_general(args.backend, args.model, args.effort, rules, strategy, instructions), log)
+            sides[a] = Side(a, make_general(args.backend, args.model, args.effort, rules), log, system_for)
+            role = "Spielerarmee" if a == (w.player_alliance or 1) else "Gegnerarmee"
+            say(f"Allianz {a} ist die {role}.")
             say(f"Uebernehme Allianz {a} ({len(w.side(a))} Einheiten).")
         return sides[a]
 

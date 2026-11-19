@@ -49,9 +49,9 @@ ACTIONS = [("Aufstellung übernehmen", "deploy"), ("Markierte → KI", "sel_ai")
 DEFAULT_HOTKEYS = {"deploy": "F9", "sel_ai": "F10", "sel_player": "F11"}
 
 DEFAULTS = {"model": next(iter(MODELS)), "effort": "low", "interval": 10, "close_interval": 5,
-            "strategy": "standard", "strategy_drafts": {}, "instructions": "", "deploy_prompt": "",
+            "strategy": "standard", "strategy_drafts": {}, "orders_player": "", "orders_enemy": "", "deploy_prompt": "",
             "hotkeys": dict(DEFAULT_HOTKEYS), "own_groups": False,
-            "geometry": "1000x900"}
+            "geometry": "1040x1000"}
 
 
 # ---------------- Schluessel ----------------
@@ -83,9 +83,14 @@ def mask(k: str) -> str:
 # ---------------- Einstellungen ----------------
 def settings_load() -> dict:
     try:
-        return {**DEFAULTS, **json.loads(SETTINGS.read_text(encoding="utf-8"))}
+        s = {**DEFAULTS, **json.loads(SETTINGS.read_text(encoding="utf-8"))}
     except (FileNotFoundError, json.JSONDecodeError):
         return json.loads(json.dumps(DEFAULTS))
+    # frueheres Feld "Zusatzbefehle" (galt fuer beide Seiten) -> Befehle meiner Armee
+    old = (s.pop("instructions", "") or "").strip()
+    if old and not (s.get("orders_player") or "").strip():
+        s["orders_player"] = old
+    return s
 
 
 def settings_save(s: dict) -> None:
@@ -138,7 +143,7 @@ class App(tk.Tk):
         root = ttk.Frame(self, padding=8)
         root.pack(fill="both", expand=True)
         root.columnconfigure(0, weight=1)
-        root.rowconfigure(4, weight=1)
+        root.rowconfigure(5, weight=1)
 
         # Zugang
         f = ttk.LabelFrame(root, text="Zugang zu Claude", padding=6)
@@ -210,15 +215,25 @@ class App(tk.Tk):
         ttk.Button(bb, text="Verwerfen", command=self._strategy_discard).pack(side="left", padx=2)
         self.strat_text = self._text(f, 8, "")
         self.strat_text.grid(row=1, column=0, columnspan=3, sticky="ew", pady=4)
-        ttk.Label(f, text="Nur Zeilen mit „- “ gehen an das Modell. Zusatzbefehle für die Schlacht (freier Text, "
-                          "z. B. „Halte den Hügel im Westen um jeden Preis“):", foreground="#555").grid(
-            row=2, column=0, columnspan=3, sticky="w")
-        self.instr_text = self._text(f, 3, self.s.get("instructions", ""))
-        self.instr_text.grid(row=3, column=0, columnspan=3, sticky="ew", pady=4)
+        ttk.Label(f, text="Vorlage = allgemeine Ratschläge für beide Seiten (nur Zeilen mit „- “). Verbindliche Taktik "
+                          "gehört in die Befehlsfelder unten. Alles wirkt ab dem nächsten Plan, auch während der Schlacht.",
+                  foreground="#555").grid(row=2, column=0, columnspan=3, sticky="w")
+
+        # Befehle je Seite
+        f = ttk.LabelFrame(root, text="Befehle (verbindlich – gehen vor die Strategie-Ratschläge)", padding=6)
+        f.grid(row=3, column=0, sticky="ew", **pad)
+        f.columnconfigure(0, weight=1)
+        f.columnconfigure(1, weight=1)
+        ttk.Label(f, text="Meine Armee (wenn die KI sie führt):").grid(row=0, column=0, sticky="w")
+        ttk.Label(f, text="Gegner (wenn die KI ihn führt):").grid(row=0, column=1, sticky="w", padx=(8, 0))
+        self.orders_player_text = self._text(f, 6, self.s.get("orders_player", ""))
+        self.orders_player_text.grid(row=1, column=0, sticky="ew", pady=4)
+        self.orders_enemy_text = self._text(f, 6, self.s.get("orders_enemy", ""))
+        self.orders_enemy_text.grid(row=1, column=1, sticky="ew", pady=4, padx=(8, 0))
 
         # Aufstellung
-        f = ttk.LabelFrame(root, text="Aufstellung (Prompt für Strg+Alt+A – wird bei jedem Auslösen neu gelesen)", padding=6)
-        f.grid(row=3, column=0, sticky="ew", **pad)
+        f = ttk.LabelFrame(root, text="Aufstellung (Prompt für „Aufstellung übernehmen“ – wird bei jedem Auslösen neu gelesen)", padding=6)
+        f.grid(row=4, column=0, sticky="ew", **pad)
         f.columnconfigure(0, weight=1)
         ttk.Label(f, text="Wie soll aufgestellt werden? z. B. „Infanterie in zwei Linien, Artillerie auf dem Hügel "
                           "rechts, Kavallerie als Reserve hinter dem linken Flügel“", foreground="#555").grid(
@@ -228,7 +243,7 @@ class App(tk.Tk):
 
         # Steuerung + Protokoll
         f = ttk.LabelFrame(root, text="Feldherr", padding=6)
-        f.grid(row=4, column=0, sticky="nsew", **pad)
+        f.grid(row=5, column=0, sticky="nsew", **pad)
         f.columnconfigure(0, weight=1)
         f.rowconfigure(2, weight=1)
         bar = ttk.Frame(f)
@@ -403,7 +418,8 @@ class App(tk.Tk):
         self.s.update({"model": self.model_var.get(), "effort": self.effort_var.get(), "interval": interval,
                        "close_interval": cint, "strategy": name, "strategy_drafts": drafts,
                        "control": self.control_var.get(),
-                       "instructions": self.instr_text.get("1.0", "end").strip(),
+                       "orders_player": self.orders_player_text.get("1.0", "end").strip(),
+                       "orders_enemy": self.orders_enemy_text.get("1.0", "end").strip(),
                        "deploy_prompt": self.deploy_text.get("1.0", "end").strip(),
                        "hotkeys": {c: v.get().strip() for c, v in self.hotkey_vars.items()},
                        "own_groups": self.own_groups_var.get(),
@@ -420,10 +436,12 @@ class App(tk.Tk):
         self._update_draft_label()
 
     def _write_runtime(self) -> None:
-        """Dateien, die der laufende Feldherr liest (Aufstellungsprompt wird bei jedem Strg+Alt+A neu gelesen)."""
+        """Dateien, die der laufende Feldherr vor jedem Plan (bzw. jeder Aufstellung) neu liest - bei jeder Aenderung
+        geschrieben, damit sie sofort wirken."""
         RUNTIME.mkdir(exist_ok=True)
-        (RUNTIME / "deploy_prompt.txt").write_text(self.deploy_text.get("1.0", "end").strip() + "\n", encoding="utf-8")
-        (RUNTIME / "instructions.txt").write_text(self.instr_text.get("1.0", "end").strip() + "\n", encoding="utf-8")
+        for name, widget in (("deploy_prompt.txt", self.deploy_text), ("orders_player.txt", self.orders_player_text),
+                             ("orders_enemy.txt", self.orders_enemy_text), ("strategy.md", self.strat_text)):
+            (RUNTIME / name).write_text(widget.get("1.0", "end").strip() + "\n", encoding="utf-8")
 
     # ---------- Start/Stopp ----------
     def _start(self) -> None:
@@ -441,12 +459,11 @@ class App(tk.Tk):
                 if not messagebox.askyesno("Kein API-Schlüssel", "Es ist kein Schlüssel gespeichert. Trotzdem starten "
                                                                  "(z. B. mit `ant auth login`)?"):
                     return
-        # aktuelle (ggf. ungespeicherte) Strategie fuer diesen Lauf
-        strat_file = RUNTIME / f"{s['strategy'] or 'eigene'}.md"
-        strat_file.write_text(self.strat_text.get("1.0", "end"), encoding="utf-8")
+        # Laufzeitdateien (Strategie, Befehle, Aufstellungsprompt) liest der Feldherr vor jedem Plan neu
         cmd = [sys.executable, str(HERE / "commander.py"), "--backend", backend, "--effort", s["effort"],
                "--interval", str(s["interval"]), "--close-interval", str(s["close_interval"]),
-               "--strategy", str(strat_file), "--instructions", str(RUNTIME / "instructions.txt"),
+               "--strategy", str(RUNTIME / "strategy.md"),
+               "--orders-player", str(RUNTIME / "orders_player.txt"), "--orders-enemy", str(RUNTIME / "orders_enemy.txt"),
                "--deploy-prompt", str(RUNTIME / "deploy_prompt.txt"),
                "--hotkeys", ",".join(f"{c}={k}" for c, k in s["hotkeys"].items() if k)]
         if model:
