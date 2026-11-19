@@ -94,8 +94,12 @@ def install(game: Path, force: bool) -> None:
     if not dll.exists():
         print("empire_bridge.dll fehlt - baue sie mit dll/build.bat ...")
         subprocess.run(["cmd", "/c", str(HERE / "dll" / "build.bat")], check=True)
-    shutil.copy2(dll, game / "empire_bridge.dll")
-    print(f"  DLL           -> {game / 'empire_bridge.dll'}")
+    try:
+        shutil.copy2(dll, game / "empire_bridge.dll")
+        print(f"  DLL           -> {game / 'empire_bridge.dll'}")
+    except PermissionError:
+        print(f"  HINWEIS: {game / 'empire_bridge.dll'} ist gesperrt (Empire laeuft) und wurde NICHT ersetzt. "
+              "Nach dem Beenden von Empire `python install.py` erneut ausfuehren; alles andere ist eingerichtet.")
     shutil.copy2(HERE / "lua" / "ai_bridge.battle_script", game / "data" / "ai_bridge.battle_script")
     print(f"  Battle-Skript -> {game / 'data' / 'ai_bridge.battle_script'}")
 
@@ -104,7 +108,8 @@ def install(game: Path, force: bool) -> None:
     if not orig.exists():
         shutil.copy2(bs, orig)
         print(f"  Sicherung     -> {orig}")
-    text = strip_addon(bs.read_text(encoding="latin-1"))
+    # Immer vom Original ausgehen: entfernt auch aeltere, von Hand eingebaute Lade-Bloecke ohne Marker
+    text = strip_addon(orig.read_text(encoding="latin-1"))
     addon = (HERE / "lua" / "battle_scripted_addon.lua").read_text(encoding="utf-8")
     bs.write_text(text + addon, encoding="latin-1")
     print(f"  Lade-Block    -> {bs}")

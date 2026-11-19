@@ -242,7 +242,14 @@ class App(tk.Tk):
                 msg = "Schlüssel gültig ✓ (Verbindung zur Claude-API steht)"
             except Exception as e:  # Anzeige im UI, kein Abbruch
                 name = type(e).__name__
-                msg = "Schlüssel ungültig ✗" if "Authentication" in name else f"Prüfung fehlgeschlagen: {name}"
+                if "Authentication" in name:
+                    msg = "Schlüssel ungültig ✗"
+                else:
+                    # eigentliche Ursache zeigen (z. B. verpackt die SDK lokale Fehler als "Connection error")
+                    cause = e.__cause__ or e.__context__
+                    detail = f" – Ursache: {type(cause).__name__}: {str(cause)[:120]}" if cause else ""
+                    msg = f"Prüfung fehlgeschlagen: {name}{detail}"
+                msg = msg.replace(k, "<Schlüssel>")
             self.after(0, lambda: self.key_status.config(text=msg))
 
         threading.Thread(target=run, daemon=True).start()
