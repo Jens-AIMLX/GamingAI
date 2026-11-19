@@ -1,0 +1,21 @@
+# Build-Ergebnisse
+*.dll
+*.obj
+*.exp
+*.lib
+*.pdb
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Lokale Einstellungen und Laufzeitdaten (enthalten Pfade, nie Schluessel)
+empire/python/local_settings.json
+empire/python/settings.json
+empire/python/runtime/
+empire/python/logs/
+
+# Spieldateien niemals einchecken
+*.pack
+Empire.exe

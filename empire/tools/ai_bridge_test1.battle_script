@@ -1,0 +1,121 @@
+-- ------------------------------------------------------------ --
+-- ai_bridge.battle_script  (Test 1: nur lesen, keine Befehle)
+-- Wird von empire_bridge.dll in jede Schlacht ohne eigenes battle_script eingesetzt.
+-- Prueft: Laeuft das Skript? Sind io/os/package da? Funktionieren
+-- empire_battle, Timer, Einheitenabfragen? Welche Methoden gibt es?
+-- Ausgabe: ai_bridge_log.txt im Spielordner.
+-- ------------------------------------------------------------ --
+
+local LOGNAME = "ai_bridge_log.txt"
+
+local function log(s)
+	if type(io) ~= "table" or type(io.open) ~= "function" then return end
+	local f = io.open(LOGNAME, "a")
+	if f then f:write(tostring(s), "\n"); f:close() end
+end
+
+local function try(label, fn)
+	local ok, res = pcall(fn)
+	if ok then log("  " .. label .. " = " .. tostring(res))
+	else log("  " .. label .. " FEHLER: " .. tostring(res)) end
+	return ok and res or nil
+end
+
+local function methods(obj)
+	local names = {}
+	local mt = getmetatable(obj)
+	if type(mt) == "table" then
+		for k in pairs(mt) do names[#names + 1] = tostring(k) end
+		if type(mt.__index) == "table" then
+			for k in pairs(mt.__index) do names[#names + 1] = "." .. tostring(k) end
+		end
+	elseif mt ~= nil then
+		names[#names + 1] = "(metatable: " .. type(mt) .. ")"
+	end
+	table.sort(names)
+	return table.concat(names, " ")
+end
+
+local function vec(v)
+	if v == nil then return "nil" end
+	local ok, s = pcall(function()
+		return string.format("(%.1f, %.1f, %.1f)", v:get_x(), v:get_y(), v:get_z())
+	end)
+	return ok and s or tostring(v)
+end
+
+log("==================================================")
+log("ai_bridge Test 1 start " .. ((type(os) == "table" and os.date) and os.date() or "?"))
+log("_VERSION=" .. tostring(_VERSION) .. " io=" .. type(io) .. " os=" .. type(os) ..
+    " package=" .. type(package) .. " debug=" .. type(debug) .. " require=" .. type(require))
+if type(package) == "table" then log("package.loadlib=" .. type(package.loadlib) .. " cpath=" .. tostring(package.cpath)) end
+log("decoda_name=" .. tostring(decoda_name) .. " empire_battle=" .. type(empire_battle))
+
+local g = {}
+for k, v in pairs(_G) do g[#g + 1] = tostring(k) .. ":" .. type(v) end
+table.sort(g)
+log("globals: " .. table.concat(g, " "))
+
+battle = empire_battle:new()
+log("battle methods: " .. methods(battle))
+
+function AI_Bridge_Dump(tag)
+	log("---- dump: " .. tostring(tag))
+	try("game_time", function() return battle:game_time() end)
+	local als = battle:alliances()
+	local na = als:count()
+	log("  alliances=" .. tostring(na))
+	for a = 1, na do
+		local al = als:item(a)
+		if a == 1 and tag == "start" then log("  alliance methods: " .. methods(al)) end
+		local arms = al:armies()
+		for r = 1, arms:count() do
+			local army = arms:item(r)
+			if a == 1 and r == 1 and tag == "start" then log("  army methods: " .. methods(army)) end
+			local units = army:units()
+			log(string.format("  alliance %d army %d: %d Einheiten", a, r, units:count()))
+			for u = 1, units:count() do
+				local un = units:item(u)
+				if a == 1 and r == 1 and u == 1 and tag == "start" then log("  unit methods: " .. methods(un)) end
+				local line = string.format("    a%d r%d u%d", a, r, u)
+				local function add(lbl, fn)
+					local ok, v = pcall(fn)
+					line = line .. " " .. lbl .. "=" .. (ok and tostring(v) or "ERR")
+				end
+				add("name", function() return un:name() end)
+				add("pos", function() return vec(un:position()) end)
+				add("bearing", function() return un:bearing() end)
+				add("men", function() return un:number_of_men_alive() .. "/" .. un:initial_number_of_men() end)
+				add("routing", function() return un:is_routing() end)
+				add("moving", function() return un:is_moving() end)
+				add("range", function() return un:missile_range() end)
+				log(line)
+			end
+		end
+	end
+end
+
+local function safe(tag)
+	local ok, err = pcall(AI_Bridge_Dump, tag)
+	if not ok then log("  dump '" .. tostring(tag) .. "' FEHLER: " .. tostring(err)) end
+end
+
+function AI_Bridge_T5()  safe("t+5s") end
+function AI_Bridge_T60() safe("t+60s") end
+function AI_Bridge_Phase(event)
+	local n = "?"
+	pcall(function() n = event:get_name() end)
+	log("---- battle phase: " .. tostring(n))
+	safe("phase " .. tostring(n))
+end
+
+safe("start")
+try("register_singleshot_timer 5s",  function() battle:register_singleshot_timer("AI_Bridge_T5", 5000); return true end)
+try("register_singleshot_timer 60s", function() battle:register_singleshot_timer("AI_Bridge_T60", 60000); return true end)
+try("register_battle_phase_handler", function() battle:register_battle_phase_handler("AI_Bridge_Phase"); return true end)
+try("create_unit_controller (a2 r1)", function()
+	local c = battle:alliances():item(2):armies():item(1):create_unit_controller()
+	log("  controller methods: " .. methods(c))
+	return c
+end)
+log("ai_bridge Test 1 geladen")

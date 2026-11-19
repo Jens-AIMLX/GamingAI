@@ -1,0 +1,260 @@
+-- ------------------------------------------------------------ --
+-- ai_bridge.battle_script  (Test 2: Steuerung, selbstpruefend)
+--
+-- Keine Beobachtung noetig: das Skript misst selbst und schreibt
+-- PASS/FAIL-Marker nach ai_bridge_log.txt.
+--
+-- Ablauf ab Schlachtbeginn (Phase "Deployed", Spielzeit):
+--   T+0s   take_control aller Einheiten der Test-Allianz, jede Einheit
+--          bekommt goto 150 m SEITLICH (quer zur Linie zwischen den Armeen).
+--          Das macht die Spiel-KI nie von sich aus -> eindeutiges Signal.
+--   T+50s  CHECK A: sind die Einheiten zum seitlichen Ziel gelaufen?
+--   T+55s  halt fuer alle
+--   T+60s / T+90s  CHECK B: bleiben sie 30 s stehen (KI greift nicht ein)?
+--   T+95s  release_control
+--   T+135s CHECK C: bewegt die Spiel-KI sie danach wieder? (Info)
+--   ERGEBNIS-Zeile am Ende.
+--
+-- Test-Allianz: die Gegner-Allianz, falls der Spieler eine eigene
+-- Einheit angeklickt hat; sonst Allianz 2 (dann ggf. eigene Truppen -
+-- fuer den Test egal). Einfach Schlacht starten und >= 2,5 min laufen lassen.
+-- ------------------------------------------------------------ --
+
+local LOGNAME = "ai_bridge_log.txt"
+local SIDE_M = 150
+
+local function log(s)
+	local f = io.open(LOGNAME, "a")
+	if f then
+		local t = 0
+		pcall(function() t = battle:game_time() end)
+		f:write(string.format("[%6.1f] ", t), tostring(s), "\n"); f:close()
+	end
+end
+
+local function try(label, fn)
+	local ok, res = pcall(fn)
+	if not ok then log("  " .. label .. " FEHLER: " .. tostring(res)) end
+	return ok, res
+end
+
+local function vec(v)
+	if v == nil then return "nil" end
+	local ok, s = pcall(function() return string.format("(%.1f, %.1f, %.1f)", v:get_x(), v:get_y(), v:get_z()) end)
+	return ok and s or tostring(v)
+end
+
+local function dist(p, q)
+	local dx, dz = p:get_x() - q:get_x(), p:get_z() - q:get_z()
+	return math.sqrt(dx * dx + dz * dz)
+end
+
+local function alive(e) return e.unit:number_of_men_alive() > 0 and not e.unit:is_routing() end
+
+log("==================================================")
+log("ai_bridge Test 2 (selbstpruefend) start " .. os.date())
+
+battle = empire_battle:new()
+
+AIB = { alliances = {}, player = nil, test = nil, units = {}, result = {} }
+
+local als = battle:alliances()
+for a = 1, als:count() do
+	local entry = { units = {} }
+	local arms = als:item(a):armies()
+	for r = 1, arms:count() do
+		local army = arms:item(r)
+		local units = army:units()
+		for u = 1, units:count() do
+			entry.units[#entry.units + 1] = { unit = units:item(u), army = army, a = a, r = r, u = u }
+		end
+	end
+	AIB.alliances[a] = entry
+	log(string.format("Allianz %d: %d Einheiten", a, #entry.units))
+end
+
+-- CHECK D: unit:type()
+do
+	local okc, n = 0, 0
+	for _, entry in ipairs(AIB.alliances) do
+		for _, e in ipairs(entry.units) do
+			n = n + 1
+			local ok, t = pcall(function() return e.unit:type() end)
+			if ok and t ~= nil then okc = okc + 1 end
+			log(string.format("  a%d r%d u%d type=%s men=%d", e.a, e.r, e.u, ok and tostring(t) or ("ERR " .. tostring(t)), e.unit:number_of_men_alive()))
+		end
+	end
+	AIB.result.D = (okc == n and n > 0) and "PASS" or "FAIL"
+	log(string.format("CHECK D unit:type(): %s (%d/%d Einheiten mit Typ)", AIB.result.D, okc, n))
+end
+
+local function centroid(entry)
+	local x, z, n = 0, 0, 0
+	for _, e in ipairs(entry.units) do
+		if e.unit:number_of_men_alive() > 0 then
+			local p = e.unit:position(); x = x + p:get_x(); z = z + p:get_z(); n = n + 1
+		end
+	end
+	if n == 0 then return nil end
+	return x / n, z / n
+end
+
+-- Spieler-Erkennung (optional, per Klick auf eigene Einheit)
+function AI_Bridge_Selected(unit, selected)
+	if not selected or AIB.player then return end
+	local ok, err = pcall(function()
+		for a, entry in ipairs(AIB.alliances) do
+			for _, e in ipairs(entry.units) do
+				if e.unit == unit then AIB.player = a; log("Spieler-Allianz per Auswahl erkannt: " .. a); return end
+			end
+		end
+	end)
+	if not ok then log("Auswahl-Handler FEHLER: " .. tostring(err)) end
+end
+try("register_unit_selection_handler", function() battle:register_unit_selection_handler("AI_Bridge_Selected") end)
+
+-- ------------------------------------------------------------
+-- T+0: Kontrolle uebernehmen, seitlich verschieben
+-- ------------------------------------------------------------
+local function start_test()
+	if AIB.test then return end
+	if AIB.player then AIB.test = (AIB.player == 1) and 2 or 1 else AIB.test = 2 end
+	log(string.format("Test-Allianz = %d (Spieler-Allianz %s)", AIB.test, tostring(AIB.player or "unbekannt")))
+
+	local ax, az = centroid(AIB.alliances[AIB.test])
+	local ox, oz = centroid(AIB.alliances[AIB.test == 1 and 2 or 1])
+	local dx, dz = ox - ax, oz - az
+	local d = math.sqrt(dx * dx + dz * dz)
+	-- senkrecht zur Verbindungslinie
+	local sx, sz = -dz / d * SIDE_M, dx / d * SIDE_M
+	log(string.format("Abstand der Armeen %.0f m, seitliche Verschiebung (%.1f, %.1f)", d, sx, sz))
+
+	for _, e in ipairs(AIB.alliances[AIB.test].units) do
+		if alive(e) then
+			local ok, err = pcall(function()
+				local c = e.army:create_unit_controller()
+				c:add_units(e.unit)
+				c:take_control()
+				local p = e.unit:position()
+				local t = battle_vector:new()
+				t:set(p:get_x() + sx, p:get_y(), p:get_z() + sz)
+				c:goto_location(t)
+				e.ctrl, e.start, e.target = c, p, t
+				e.start_x, e.start_z = p:get_x(), p:get_z()
+				AIB.units[#AIB.units + 1] = e
+			end)
+			if not ok then log(string.format("  u%d FEHLER: %s", e.u, tostring(err))) end
+		end
+	end
+	log(string.format("T+0: %d Einheiten uebernommen, goto %d m seitlich", #AIB.units, SIDE_M))
+
+	battle:register_repeating_timer("AI_Bridge_Report", 10000)
+	battle:register_singleshot_timer("AI_Bridge_CheckA", 50000)
+	battle:register_singleshot_timer("AI_Bridge_Halt", 55000)
+	battle:register_singleshot_timer("AI_Bridge_HaltSnap", 60000)
+	battle:register_singleshot_timer("AI_Bridge_CheckB", 90000)
+	battle:register_singleshot_timer("AI_Bridge_Release", 95000)
+	battle:register_singleshot_timer("AI_Bridge_CheckC", 135000)
+end
+
+function AI_Bridge_Report()
+	local n, mv, sum = 0, 0, 0
+	for _, e in ipairs(AIB.units) do
+		if alive(e) then
+			n = n + 1
+			sum = sum + dist(e.unit:position(), e.target)
+			if e.unit:is_moving() then mv = mv + 1 end
+		end
+	end
+	log(string.format("Status: %d aktiv, %d in Bewegung, mittlerer Abstand zum Ziel %.1f m", n, mv, n > 0 and sum / n or 0))
+end
+
+-- CHECK A: Einheit gilt als gefolgt, wenn sie >= 30 m in Zielrichtung gelaufen ist und dabei
+-- hoechstens 30 Grad von der befohlenen Richtung abweicht (Marschtempo ~1,4 m/s -> nach 50 s ~70 m).
+function AI_Bridge_CheckA()
+	local n, ok = 0, 0
+	for _, e in ipairs(AIB.units) do
+		if alive(e) then
+			n = n + 1
+			local p = e.unit:position()
+			local mx, mz = p:get_x() - e.start_x, p:get_z() - e.start_z
+			local tx, tz = e.target:get_x() - e.start_x, e.target:get_z() - e.start_z
+			local tl = math.sqrt(tx * tx + tz * tz)
+			local along = (mx * tx + mz * tz) / tl
+			local moved = math.sqrt(mx * mx + mz * mz)
+			local cosang = moved > 0 and along / moved or 0
+			if along >= 30 and cosang >= 0.866 then ok = ok + 1 end
+			if n <= 3 then log(string.format("  u%d: %.1f m in Zielrichtung, Abweichung %.0f Grad", e.u, along, math.deg(math.acos(math.max(-1, math.min(1, cosang)))))) end
+		end
+	end
+	AIB.result.A = (n > 0 and ok >= 0.8 * n) and "PASS" or "FAIL"
+	log(string.format("CHECK A take_control+goto: %s (%d/%d Einheiten >= 30 m in Zielrichtung, <= 30 Grad Abweichung)", AIB.result.A, ok, n))
+end
+
+function AI_Bridge_Halt()
+	for _, e in ipairs(AIB.units) do try("halt", function() e.ctrl:halt() end) end
+	log("T+55: halt fuer alle")
+end
+
+function AI_Bridge_HaltSnap()
+	for _, e in ipairs(AIB.units) do
+		local p = e.unit:position(); e.hx, e.hz = p:get_x(), p:get_z()
+	end
+	log("T+60: Positionen fuer CHECK B gemerkt")
+end
+
+-- CHECK B: 30 s nach dem Halt hat sich keine Einheit mehr als 3 m bewegt
+function AI_Bridge_CheckB()
+	local n, still, maxd = 0, 0, 0
+	for _, e in ipairs(AIB.units) do
+		if alive(e) and e.hx then
+			n = n + 1
+			local p = e.unit:position()
+			local dx, dz = p:get_x() - e.hx, p:get_z() - e.hz
+			local d = math.sqrt(dx * dx + dz * dz)
+			if d > maxd then maxd = d end
+			if d <= 3 then still = still + 1 end
+			e.cx, e.cz = p:get_x(), p:get_z()
+		end
+	end
+	AIB.result.B = (n > 0 and still >= 0.9 * n) and "PASS" or "FAIL"
+	log(string.format("CHECK B halt / KI haelt sich raus: %s (%d/%d still, max. Bewegung %.1f m in 30 s)", AIB.result.B, still, n, maxd))
+end
+
+function AI_Bridge_Release()
+	try("unregister report", function() battle:unregister_timer("AI_Bridge_Report") end)
+	for _, e in ipairs(AIB.units) do try("release", function() e.ctrl:release_control() end) end
+	log("T+95: release_control, Spiel-KI uebernimmt")
+end
+
+-- CHECK C (Info): hat die Spiel-KI die Einheiten nach der Freigabe wieder bewegt?
+function AI_Bridge_CheckC()
+	local n, moved = 0, 0
+	for _, e in ipairs(AIB.units) do
+		if alive(e) and e.cx then
+			n = n + 1
+			local p = e.unit:position()
+			local dx, dz = p:get_x() - e.cx, p:get_z() - e.cz
+			if math.sqrt(dx * dx + dz * dz) > 5 then moved = moved + 1 end
+		end
+	end
+	AIB.result.C = moved > 0 and "AKTIV" or "INAKTIV"
+	log(string.format("CHECK C KI nach Freigabe: %s (%d/%d Einheiten > 5 m bewegt)", AIB.result.C, moved, n))
+	log(string.format("ERGEBNIS: A=%s B=%s C=%s D=%s", tostring(AIB.result.A), tostring(AIB.result.B), tostring(AIB.result.C), tostring(AIB.result.D)))
+end
+
+function AI_Bridge_Phase(event)
+	local n = "?"
+	pcall(function() n = event:get_name() end)
+	log("---- Phase: " .. tostring(n))
+	if n == "Deployed" then
+		local ok, err = pcall(start_test)
+		if not ok then log("start_test FEHLER: " .. tostring(err)) end
+	elseif n == "Complete" and not AIB.result.C then
+		log(string.format("ERGEBNIS (Schlacht vorzeitig beendet): A=%s B=%s C=%s D=%s",
+			tostring(AIB.result.A), tostring(AIB.result.B), tostring(AIB.result.C), tostring(AIB.result.D)))
+	end
+end
+try("register_battle_phase_handler", function() battle:register_battle_phase_handler("AI_Bridge_Phase") end)
+
+log("ai_bridge Test 2 geladen")

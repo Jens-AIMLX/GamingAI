@@ -1,0 +1,368 @@
+-- ------------------------------------------------------------ --
+-- ai_bridge.battle_script  -  Empire AI Bridge (Datei-Bruecke)
+--
+-- Wird von empire_bridge.dll in jede Schlacht ohne eigenes
+-- battle_script eingesetzt. Protokoll: bridge_dev/PROTOCOL.md
+--   ai_bridge/config.lua   -> welche Seite gesteuert wird
+--   ai_bridge/state.json   <- Lagebild, jeder Takt
+--   ai_bridge/orders.lua   -> Befehle (Lua-Literal, nur Daten)
+--   ai_bridge/bridge_log.txt <- Ereignisse/Fehler
+-- ------------------------------------------------------------ --
+
+local DIR = "ai_bridge/"
+local ALLOWED = {
+	goto_location = true, goto_location_q = true,
+	goto_location_angle_width = true, goto_location_angle_width_q = true,
+	attack_unit = true, attack_unit_q = true,
+	attack_location = true, attack_location_q = true,
+	attack_line = true, attack_line_q = true,
+	attack_building = true, attack_building_q = true,
+	defend_building = true, defend_building_q = true, leave_building = true,
+	halt = true, withdraw = true, withdraw_q = true,
+	change_formation = true, change_formation_q = true, change_move_speed = true,
+	increment_formation_width = true, decrement_formation_width = true,
+	fire_at_will = true, skirmish = true, guard_mode = true,
+	perform_special_ability = true, perform_special_ability_q = true,
+	rotate = true, rotate_q = true, step_forward = true, step_backward = true,
+	morale_behavior_default = true, morale_behavior_fearless = true, morale_behavior_rout = true,
+}
+
+-- ------------------------------------------------------------
+-- Hilfen: Log, JSON-Encoder, sicheres Laden von Datendateien
+-- ------------------------------------------------------------
+local ARR = {}  -- Metatable-Marker fuer JSON-Arrays
+local function arr(t) return setmetatable(t or {}, ARR) end
+
+local function now()
+	local t = 0
+	if battle then pcall(function() t = battle:game_time() end) end
+	return t
+end
+
+local function log(s)
+	local f = io.open(DIR .. "bridge_log.txt", "a")
+	if f then f:write(string.format("%s [%7.1f] ", os.date("%H:%M:%S"), now()), tostring(s), "\n"); f:close() end
+end
+
+local ESC = { ['"'] = '\\"', ['\\'] = '\\\\', ['\n'] = '\\n', ['\r'] = '\\r', ['\t'] = '\\t' }
+local function esc(s)
+	return (string.gsub(s, '[%c"\\]', function(c) return ESC[c] or string.format("\\u%04x", string.byte(c)) end))
+end
+
+local function enc(v, out)
+	local t = type(v)
+	if v == nil then out[#out + 1] = "null"
+	elseif t == "boolean" then out[#out + 1] = v and "true" or "false"
+	elseif t == "number" then
+		-- Achtung: im Spiel-Lua fehlt math.huge, deshalb 1/0 statt math.huge
+		if v ~= v or v == 1 / 0 or v == -1 / 0 then out[#out + 1] = "null"
+		elseif v % 1 == 0 and v < 1e15 and v > -1e15 then out[#out + 1] = string.format("%d", v)
+		else out[#out + 1] = string.format("%.3f", v) end
+	elseif t == "string" then out[#out + 1] = '"' .. esc(v) .. '"'
+	elseif t == "table" then
+		if getmetatable(v) == ARR or #v > 0 then
+			out[#out + 1] = "["
+			for i = 1, #v do
+				if i > 1 then out[#out + 1] = "," end
+				enc(v[i], out)
+			end
+			out[#out + 1] = "]"
+		else
+			out[#out + 1] = "{"
+			local first = true
+			for k, val in pairs(v) do
+				if not first then out[#out + 1] = "," end
+				first = false
+				out[#out + 1] = '"' .. esc(tostring(k)) .. '":'
+				enc(val, out)
+			end
+			out[#out + 1] = "}"
+		end
+	else
+		out[#out + 1] = '"' .. esc(tostring(v)) .. '"'
+	end
+end
+
+local function to_json(v)
+	local out = {}
+	enc(v, out)
+	return table.concat(out)
+end
+
+local function write_atomic(name, text)
+	local tmp = DIR .. name .. ".tmp"
+	local f = io.open(tmp, "w")
+	if not f then return false end
+	f:write(text); f:close()
+	os.remove(DIR .. name)
+	if os.rename(tmp, DIR .. name) then return true end
+	-- Rueckfall (z. B. Leser haelt die Datei offen): direkt schreiben
+	f = io.open(DIR .. name, "w")
+	if f then f:write(text); f:close(); return true end
+	return false
+end
+
+-- Laedt eine Datei "return { ... }" ohne Zugriff auf Globals (nur Daten)
+local function load_data(name)
+	local f = io.open(DIR .. name, "r")
+	if not f then return nil, "fehlt" end
+	local src = f:read("*a"); f:close()
+	if src == nil or src == "" then return nil, "leer" end
+	local chunk, err = loadstring(src, name)
+	if not chunk then return nil, err end
+	setfenv(chunk, {})
+	local ok, res = pcall(chunk)
+	if not ok then return nil, res end
+	if type(res) ~= "table" then return nil, "keine Tabelle" end
+	return res
+end
+
+-- ------------------------------------------------------------
+-- Zustand
+-- ------------------------------------------------------------
+battle = empire_battle:new()
+
+AIB = {
+	cfg = { control = "enemy", player_alliance = "auto", tick_ms = 1000 },
+	alliances = {}, byid = {},
+	phase = "Startup", seq = 0, last_order_seq = 0,
+	player = nil, player_source = nil,
+	controlled_alliances = {},
+	results = arr(), player_commands = arr(),
+}
+
+do
+	local cfg, err = load_data("config.lua")
+	if cfg then
+		for k, v in pairs(cfg) do AIB.cfg[k] = v end
+	else
+		log("config.lua nicht geladen (" .. tostring(err) .. "), nutze Standard")
+	end
+	if type(AIB.cfg.player_alliance) == "number" then
+		AIB.player, AIB.player_source = AIB.cfg.player_alliance, "config"
+	end
+end
+
+-- Alte Befehle aus einer frueheren Schlacht nicht ausfuehren
+do
+	local old = load_data("orders.lua")
+	if old and type(old.seq) == "number" then AIB.last_order_seq = old.seq end
+end
+
+local als = battle:alliances()
+for a = 1, als:count() do
+	local entry = { index = a, units = {} }
+	local arms = als:item(a):armies()
+	for r = 1, arms:count() do
+		local army = arms:item(r)
+		local units = army:units()
+		for u = 1, units:count() do
+			local e = { id = a .. "." .. r .. "." .. u, unit = units:item(u), army = army, a = a }
+			local ok, t = pcall(function() return e.unit:type() end)
+			e.type = ok and t or "?"
+			entry.units[#entry.units + 1] = e
+			AIB.byid[e.id] = e
+		end
+	end
+	AIB.alliances[a] = entry
+end
+
+-- ------------------------------------------------------------
+-- Lagebild schreiben
+-- ------------------------------------------------------------
+local function unit_state(e)
+	local s = { id = e.id, type = e.type, controlled = e.controlled and true or false }
+	pcall(function()
+		local p = e.unit:position()
+		s.x, s.y, s.z = p:get_x(), p:get_y(), p:get_z()
+	end)
+	pcall(function() s.bearing = e.unit:bearing() end)
+	pcall(function() s.men = e.unit:number_of_men_alive() end)
+	pcall(function() s.men_start = e.unit:initial_number_of_men() end)
+	pcall(function() s.moving = e.unit:is_moving() end)
+	pcall(function() s.routing = e.unit:is_routing() end)
+	pcall(function() s.leaving = e.unit:is_leaving_battle() end)
+	pcall(function() s.missile_range = e.unit:missile_range() end)
+	return s
+end
+
+local function write_state()
+	AIB.seq = AIB.seq + 1
+	local st = {
+		seq = AIB.seq, game_time = now(), phase = AIB.phase,
+		player_alliance = AIB.player, player_alliance_source = AIB.player_source,
+		control = AIB.cfg.control, controlled_alliances = arr(),
+		last_order_seq = AIB.last_order_seq,
+		order_results = AIB.results, player_commands = AIB.player_commands,
+		alliances = arr(),
+	}
+	for a in pairs(AIB.controlled_alliances) do st.controlled_alliances[#st.controlled_alliances + 1] = a end
+	for _, entry in ipairs(AIB.alliances) do
+		local al = { index = entry.index, is_player = (entry.index == AIB.player),
+			controlled = AIB.controlled_alliances[entry.index] and true or false, units = arr() }
+		for _, e in ipairs(entry.units) do al.units[#al.units + 1] = unit_state(e) end
+		st.alliances[#st.alliances + 1] = al
+	end
+	write_atomic("state.json", to_json(st))
+end
+
+-- ------------------------------------------------------------
+-- Kontrolle und Befehle
+-- ------------------------------------------------------------
+local function ensure_ctrl(e)
+	if not e.ctrl then
+		e.ctrl = e.army:create_unit_controller()
+		e.ctrl:add_units(e.unit)
+	end
+	return e.ctrl
+end
+
+local function take(e)
+	ensure_ctrl(e):take_control()
+	e.controlled = true
+end
+
+local function release(e)
+	if e.ctrl then e.ctrl:release_control() end
+	e.controlled = false
+end
+
+local function convert_arg(a, e)
+	if type(a) ~= "table" then return a end
+	if a.unit then
+		local t = AIB.byid[a.unit]
+		if not t then error("unbekannte Ziel-Einheit " .. tostring(a.unit)) end
+		return t.unit
+	end
+	if a.x and a.z then
+		local y = a.y
+		if y == nil then
+			local ok, p = pcall(function() return e.unit:position() end)
+			y = ok and p:get_y() or 0
+		end
+		local v = battle_vector:new()
+		v:set(a.x, y, a.z)
+		return v
+	end
+	error("unbekanntes Argument")
+end
+
+local function exec_order(o)
+	local e = AIB.byid[o.unit]
+	if not e then error("unbekannte Einheit " .. tostring(o.unit)) end
+	if o.cmd == "take" then take(e); return end
+	if o.cmd == "release" then release(e); return end
+	if not ALLOWED[o.cmd] then error("Befehl nicht erlaubt: " .. tostring(o.cmd)) end
+	if not e.controlled then error("Einheit nicht unter Kontrolle der Bruecke") end
+	local args, n = {}, 0
+	if type(o.args) == "table" then
+		for i = 1, #o.args do args[i] = convert_arg(o.args[i], e); n = i end
+	end
+	local ctrl = e.ctrl
+	ctrl[o.cmd](ctrl, unpack(args, 1, n))
+end
+
+local function push_result(r)
+	AIB.results[#AIB.results + 1] = r
+	while #AIB.results > 100 do table.remove(AIB.results, 1) end
+end
+
+local function poll_orders()
+	local data, err = load_data("orders.lua")
+	if not data then
+		if err ~= "fehlt" then log("orders.lua: " .. tostring(err)) end
+		return
+	end
+	if type(data.seq) ~= "number" or data.seq <= AIB.last_order_seq then return end
+	AIB.last_order_seq = data.seq
+	local list = type(data.orders) == "table" and data.orders or {}
+	local okc = 0
+	for i = 1, #list do
+		local o = list[i]
+		local ok, e2 = pcall(exec_order, o)
+		if ok then okc = okc + 1 end
+		push_result({ seq = data.seq, i = i, unit = tostring(o.unit), cmd = tostring(o.cmd), ok = ok, err = (not ok) and tostring(e2) or nil })
+	end
+	log(string.format("Befehle seq %d: %d/%d ausgefuehrt", data.seq, okc, #list))
+end
+
+local function apply_control()
+	local mode = AIB.cfg.control
+	if AIB.player == nil then
+		AIB.player, AIB.player_source = 1, "annahme"
+		log("Spieler-Allianz nicht erkannt (keine eigene Einheit angeklickt) -> Annahme 1")
+	end
+	for a, entry in ipairs(AIB.alliances) do
+		local want = (mode == "both") or (mode == "enemy" and a ~= AIB.player) or (mode == "player" and a == AIB.player)
+		if want then
+			AIB.controlled_alliances[a] = true
+			local n = 0
+			for _, e in ipairs(entry.units) do
+				local ok, err = pcall(take, e)
+				if ok then n = n + 1 else log("take_control " .. e.id .. " FEHLER: " .. tostring(err)) end
+			end
+			log(string.format("Allianz %d uebernommen (%d Einheiten, Modus %s)", a, n, mode))
+		end
+	end
+end
+
+-- ------------------------------------------------------------
+-- Ereignisse
+-- ------------------------------------------------------------
+function AIB_Tick()
+	local ok, err = pcall(poll_orders)
+	if not ok then log("poll_orders FEHLER: " .. tostring(err)) end
+	ok, err = pcall(write_state)
+	if not ok then log("write_state FEHLER: " .. tostring(err)) end
+end
+
+function AIB_Phase(event)
+	local n = "?"
+	pcall(function() n = event:get_name() end)
+	AIB.phase = n
+	log("Phase: " .. tostring(n))
+	if n == "Deployed" then
+		local ok, err = pcall(apply_control)
+		if not ok then log("apply_control FEHLER: " .. tostring(err)) end
+	end
+	pcall(write_state)
+end
+
+function AIB_Selected(unit, selected)
+	if not selected or AIB.player_source then return end
+	pcall(function()
+		for a, entry in ipairs(AIB.alliances) do
+			for _, e in ipairs(entry.units) do
+				if e.unit == unit then
+					AIB.player, AIB.player_source = a, "auswahl"
+					log("Spieler-Allianz per Auswahl erkannt: " .. a)
+					return
+				end
+			end
+		end
+	end)
+end
+
+function AIB_Command(event)
+	pcall(function()
+		local c = { t = now() }
+		pcall(function() c.name = event:get_name() end)
+		pcall(function() c.string1 = event:get_string1() end)
+		pcall(function() c.bool1 = event:get_bool1() end)
+		AIB.player_commands[#AIB.player_commands + 1] = c
+		while #AIB.player_commands > 50 do table.remove(AIB.player_commands, 1) end
+	end)
+end
+
+local function reg(label, fn)
+	local ok, err = pcall(fn)
+	if not ok then log(label .. " FEHLER: " .. tostring(err)) end
+end
+reg("phase handler", function() battle:register_battle_phase_handler("AIB_Phase") end)
+reg("selection handler", function() battle:register_unit_selection_handler("AIB_Selected") end)
+reg("command handler", function() battle:register_command_handler("AIB_Command") end)
+reg("tick timer", function() battle:register_repeating_timer("AIB_Tick", AIB.cfg.tick_ms) end)
+
+log(string.format("==== Bridge geladen: %d Allianzen, Modus %s, Takt %d ms, letzte Befehls-seq %d",
+	#AIB.alliances, tostring(AIB.cfg.control), AIB.cfg.tick_ms, AIB.last_order_seq))
+pcall(write_state)

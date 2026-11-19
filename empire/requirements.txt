@@ -1,0 +1,5 @@
+anthropic>=2.10
+pydantic>=2.7
+keyring>=25
+# nur fuer die Offline-Tests (sim_test.py, sim_commander.py)
+lupa>=2.0
