@@ -34,6 +34,7 @@ class Unit:
     controlled: bool
     selected: bool = False  # im Spiel markiert
     manual: bool = False    # per Hotkey an den Spieler gegeben
+    grouped: bool = False   # im Spiel gruppiert -> nicht uebernehmbar, bis die Gruppe aufgeloest ist
     vx: float = 0.0         # m/s
     vz: float = 0.0
 
@@ -120,7 +121,7 @@ class World:
                     bearing=float(u.get("bearing") or 0.0), moving=bool(u.get("moving")),
                     routing=bool(u.get("routing")), leaving=bool(u.get("leaving")), missile_range=rng,
                     controlled=bool(u.get("controlled")), selected=bool(u.get("selected")),
-                    manual=bool(u.get("manual")), vx=vx, vz=vz)
+                    manual=bool(u.get("manual")), grouped=bool(u.get("grouped")), vx=vx, vz=vz)
                 self.units[uid] = unit
                 self.by_bid[bid] = unit
 

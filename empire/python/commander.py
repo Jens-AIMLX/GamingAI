@@ -9,10 +9,12 @@ Laeuft dauerhaft und uebernimmt jede Schlacht, sobald sie beginnt. Welche Seite 
 <Spielordner>/ai_bridge/config.lua (control = "enemy" | "player" | "both"). Jede Schlacht wird in
 logs/battle_<Zeit>.jsonl protokolliert: Lageberichte, Plaene, Fehler, Token-Verbrauch.
 
-Hotkeys (global, auch wenn Empire im Vordergrund ist):
-    Strg+Alt+A   Aufstellung uebernehmen: der Feldherr stellt die gesteuerten Seiten nach dem Aufstellungsprompt auf
-    Strg+Alt+K   markierte Einheiten -> KI
-    Strg+Alt+P   markierte Einheiten -> Spieler (die KI plant sie nicht mehr ein, bis sie zurueckgegeben werden)
+Hotkeys (global, auch wenn Empire im Vordergrund ist; einstellbar mit --hotkeys, Standard F9/F10/F11):
+    F9    Aufstellung uebernehmen: der Feldherr stellt die gesteuerten Seiten nach dem Aufstellungsprompt auf
+    F10   markierte Einheiten -> KI
+    F11   markierte Einheiten -> Spieler (die KI plant sie nicht mehr ein, bis sie zurueckgegeben werden)
+Achtung: Empire liest die Tastatur selbst (DirectInput) und sieht jede Taste ebenfalls - Kombinationen wie Strg+Alt+A
+kommen dort als Strg+A ("alle auswaehlen") an. Deshalb Tasten waehlen, die Empire nicht belegt.
 Dieselben Befehle nimmt der Feldherr aus <Spielordner>/ai_bridge/commands.txt (eine Zeile: deploy | sel_ai |
 sel_player) - so loesen die Buttons des Steuerpults sie aus.
 
@@ -39,7 +41,34 @@ from empire_general.world import World, centroid, dist
 
 HERE = Path(__file__).resolve().parent
 COMMANDS = ("deploy", "sel_ai", "sel_player")
-HOTKEYS = {"deploy": ("A", 0x41), "sel_ai": ("K", 0x4B), "sel_player": ("P", 0x50)}
+DEFAULT_HOTKEYS = "deploy=F9,sel_ai=F10,sel_player=F11"
+_VK = {**{f"F{i}": 0x6F + i for i in range(1, 25)}, **{chr(c): c for c in range(ord("A"), ord("Z") + 1)},
+       **{str(d): 0x30 + d for d in range(10)}, **{f"NUM{d}": 0x60 + d for d in range(10)},
+       "PAUSE": 0x13, "SCROLLLOCK": 0x91, "INSERT": 0x2D, "HOME": 0x24, "END": 0x23, "PAGEUP": 0x21, "PAGEDOWN": 0x22}
+_MOD = {"STRG": 0x2, "CTRL": 0x2, "ALT": 0x1, "SHIFT": 0x4, "UMSCHALT": 0x4, "WIN": 0x8}
+
+
+def parse_hotkeys(spec: str) -> dict[str, tuple[str, int, int]]:
+    """'deploy=F9,sel_ai=Strg+Alt+K' -> {cmd: (Anzeige, Modifier, VK)}. Hinweis: Empire liest die Tastatur per
+    DirectInput und sieht jede Taste trotzdem - Kombinationen mit Strg/Alt/Buchstaben loesen dort auch Spielbefehle aus."""
+    out: dict[str, tuple[str, int, int]] = {}
+    for part in (spec or "").split(","):
+        if "=" not in part:
+            continue
+        cmd, key = (s.strip() for s in part.split("=", 1))
+        if cmd not in COMMANDS or not key:
+            continue
+        mods, vk = 0, None
+        for tok in key.upper().replace(" ", "").split("+"):
+            if tok in _MOD:
+                mods |= _MOD[tok]
+            elif tok in _VK:
+                vk = _VK[tok]
+        if vk is None:
+            say(f"WARNUNG: Hotkey '{key}' fuer {cmd} nicht verstanden - ignoriert")
+            continue
+        out[cmd] = (key, mods, vk)
+    return out
 
 
 def say(msg: str) -> None:
@@ -47,22 +76,22 @@ def say(msg: str) -> None:
 
 
 # ---------------- Hotkeys (Windows RegisterHotKey, ohne Zusatzpaket) ----------------
-def hotkey_thread(q: queue.Queue) -> None:
+def hotkey_thread(q: queue.Queue, hotkeys: dict[str, tuple[str, int, int]]) -> None:
     try:
         import ctypes
         from ctypes import wintypes
     except ImportError:
         return
     user32 = ctypes.windll.user32
-    MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, WM_HOTKEY = 0x1, 0x2, 0x4000, 0x0312
+    MOD_NOREPEAT, WM_HOTKEY = 0x4000, 0x0312
     ids = {}
-    for i, (cmd, (key, vk)) in enumerate(HOTKEYS.items(), start=1):
-        if user32.RegisterHotKey(None, i, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, vk):
+    for i, (cmd, (label, mods, vk)) in enumerate(hotkeys.items(), start=1):
+        if user32.RegisterHotKey(None, i, mods | MOD_NOREPEAT, vk):
             ids[i] = cmd
         else:
-            say(f"WARNUNG: Hotkey Strg+Alt+{key} konnte nicht registriert werden (von einem anderen Programm belegt?)")
+            say(f"WARNUNG: Hotkey {label} konnte nicht registriert werden (von einem anderen Programm belegt?)")
     if ids:
-        say("Hotkeys aktiv: " + ", ".join(f"Strg+Alt+{HOTKEYS[c][0]} = {c}" for c in ids.values()))
+        say("Hotkeys aktiv: " + ", ".join(f"{hotkeys[c][0]} = {c}" for c in ids.values()))
     msg = wintypes.MSG()
     while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
         if msg.message == WM_HOTKEY and msg.wParam in ids:
@@ -170,6 +199,7 @@ def main() -> int:
     ap.add_argument("--instructions", default=None, help="Datei mit freien Anweisungen an den Feldherrn")
     ap.add_argument("--deploy-prompt", default=None, help="Datei mit dem Aufstellungsprompt (wird bei jedem Strg+Alt+A neu gelesen)")
     ap.add_argument("--no-hotkeys", action="store_true", help="keine globalen Hotkeys registrieren")
+    ap.add_argument("--hotkeys", default=DEFAULT_HOTKEYS, help=f"z. B. '{DEFAULT_HOTKEYS}' oder 'deploy=Strg+Shift+F9,...'")
     args = ap.parse_args()
 
     rules, strategy = load_text(HERE / "rules.md"), load_text(Path(args.strategy))
@@ -183,7 +213,7 @@ def main() -> int:
 
     q: queue.Queue = queue.Queue()
     if not args.no_hotkeys and sys.platform == "win32":
-        threading.Thread(target=hotkey_thread, args=(q,), daemon=True).start()
+        threading.Thread(target=hotkey_thread, args=(q, parse_hotkeys(args.hotkeys)), daemon=True).start()
 
     say(f"Feldherr bereit ({args.backend}{' ' + (args.model or 'claude-opus-5-5') if args.backend == 'claude' else ''}), "
         f"Bruecke {br.dir}. Warte auf eine Schlacht ...")
@@ -193,6 +223,7 @@ def main() -> int:
     logf = None
     last_seq, last_time = -1, -1.0
     battle_over = False
+    reported_grouped: set[int] = set()
 
     def log(entry: dict) -> None:
         if logf:
@@ -272,11 +303,19 @@ def main() -> int:
             if w is not None and args.once:
                 break
             w, sides, battle_over = World(), {}, False
+            reported_grouped = set()
             if logf:
                 logf.close()
             logf = (logdir / time.strftime("battle_%Y%m%d_%H%M%S.jsonl")).open("w", encoding="utf-8")
             say("Neue Schlacht erkannt.")
         w.update(st)
+        grouped = {u.id for u in w.units.values() if u.grouped and not u.manual}
+        if grouped - reported_grouped:
+            new = sorted(grouped - reported_grouped)
+            reported_grouped |= grouped
+            log({"type": "info", "t": w.time, "text": f"{len(new)} Einheit(en) sind im Spiel gruppiert und koennen nicht "
+                 f"uebernommen werden ({', '.join('#' + str(i) for i in new)}). Gruppe im Spiel aufloesen - die KI uebernimmt "
+                 "sie dann automatisch (Pruefung alle 10 s)."})
         if battle_over:
             continue
         if w.phase == "Complete":

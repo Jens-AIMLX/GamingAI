@@ -26,6 +26,8 @@ def _unit_line(w: World, u: Unit, foes: list[Unit], task: str | None = None) -> 
         s += ", DESTROYED"
     if u.manual:
         s += " | COMMANDED BY THE PLAYER - do not give it orders"
+    elif u.grouped:
+        s += " | IN A PLAYER GROUP, NOT UNDER YOUR COMMAND - do not give it orders"
     if task:
         s += f" | {task}"
     if u.alive and foes:

@@ -72,3 +72,87 @@ class Plan(BaseModel):
     note: str = Field(description="A short note to yourself for the next plans: what you are trying, what the enemy keeps "
                                   "doing, what worked or failed. Your last notes are shown in every report")
     groups: list[GroupOrder]
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Antwortschema fuer die Claude-API (strukturierte Ausgabe).
+# Die API begrenzt optionale Felder und Vereinigungstypen ("X oder null") - das reiche Plan-Schema oben wurde mit
+# "Schema is too complex" abgelehnt. Hier sind alle Felder Pflicht, ohne null; "nicht gesetzt" ist 0, -1, "" oder
+# eine leere Liste. to_plan() macht daraus den internen Plan.
+# ---------------------------------------------------------------------------------------------------------------
+class WireReflexEvent(BaseModel):
+    type: Literal["near", "routed", "arrived", "after"] = Field(
+        description="near = an enemy comes within within_m of a unit of this group; routed = a unit of this group "
+                    "(side=ally) or of enemy_units (side=enemy) routs or dies; arrived = the group reached its move "
+                    "target; after = seconds passed since this plan")
+    within_m: float = Field(description="near: metres; otherwise 0")
+    side: Literal["ally", "enemy", "none"] = Field(description="routed: whose unit; otherwise none")
+    seconds: float = Field(description="after: seconds; otherwise 0")
+    enemy_units: list[int] = Field(description="near/routed(enemy): only these enemy ids; [] = any enemy")
+
+
+class WireReflexOrder(BaseModel):
+    type: Literal["attack", "fall_back", "hold", "move"]
+    distance_m: float = Field(description="fall_back: metres (e.g. 60); otherwise 0")
+    target_point: list[float] = Field(description="move: [x, z]; otherwise []")
+    run: bool
+
+
+class WireReflex(BaseModel):
+    event: WireReflexEvent
+    order: WireReflexOrder
+
+
+class WireGroup(BaseModel):
+    name: str = Field(description="short label, e.g. 'centre line'")
+    unit_ids: list[int] = Field(description="your unit ids; line: left to right as the troops face facing_deg; column: front to back")
+    task: Literal["move", "attack", "halt", "withdraw"]
+    target_point: list[float] = Field(description="move: [x, z] centre of the line / head of the column; otherwise []")
+    facing_deg: float = Field(description="move: front direction on arrival, 0 = north, 90 = east; -1 = towards the enemy army")
+    shape: Literal["line", "column", "none"]
+    spacing_m: float = Field(description="move: gap between units in a line / distance in a column, e.g. 6")
+    waypoints: list[list[float]] = Field(description="move: [[x, z], ...] to pass first; [] = straight there")
+    target_unit: int = Field(description="attack: enemy unit id; otherwise 0")
+    run: bool = Field(description="true only for charges and urgent moves")
+    on_target_lost: Literal["nearest", "halt"]
+    engage_within_m: float = Field(description="move/halt reflex: attack enemies coming this close to the unit's place; 0 = off")
+    keep_range_m: float = Field(description="reflex (not with attack): fall back when an enemy comes closer; 0 = off")
+    fire_at_will: Literal["on", "off", "unchanged"]
+    skirmish: Literal["on", "off", "unchanged"]
+    reflexes: list[WireReflex] = Field(description="conditional orders for this group; [] = none")
+
+
+class WirePlan(BaseModel):
+    intent: str = Field(description="one or two sentences: the overall idea")
+    note: str = Field(description="short note to yourself for the next plans")
+    groups: list[WireGroup]
+
+
+def _pt(v: list[float]) -> list[float] | None:
+    return [float(v[0]), float(v[1])] if v and len(v) >= 2 else None
+
+
+def _flag(v: str) -> bool | None:
+    return {"on": True, "off": False}.get(v)
+
+
+def to_plan(w: WirePlan) -> Plan:
+    groups = []
+    for g in w.groups:
+        reflexes = []
+        for r in g.reflexes:
+            e, o = r.event, r.order
+            reflexes.append(Reflex(
+                event=ReflexEvent(type=e.type, within_m=e.within_m or None,
+                                  side=None if e.side == "none" else e.side, seconds=e.seconds or None,
+                                  enemy_units=e.enemy_units or None),
+                order=ReflexOrder(type=o.type, distance_m=o.distance_m or None, target_point=_pt(o.target_point), run=o.run)))
+        groups.append(GroupOrder(
+            name=g.name, unit_ids=g.unit_ids, task=g.task, target_point=_pt(g.target_point),
+            facing_deg=None if g.facing_deg < 0 else g.facing_deg % 360, shape=g.shape,
+            spacing_m=g.spacing_m if g.spacing_m > 0 else 6.0,
+            waypoints=[p for p in (_pt(x) for x in g.waypoints) if p] or None,
+            target_unit=g.target_unit or None, run=g.run, on_target_lost=g.on_target_lost,
+            engage_within_m=g.engage_within_m or None, keep_range_m=g.keep_range_m or None,
+            fire_at_will=_flag(g.fire_at_will), skirmish=_flag(g.skirmish), reflexes=reflexes or None))
+    return Plan(intent=w.intent, note=w.note, groups=groups)

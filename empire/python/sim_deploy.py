@@ -26,6 +26,9 @@ from sim_commander import MOCK, SCRIPT
 HERE = Path(__file__).resolve().parent
 
 EXTRA = r"""
+function SIM_group(alliance_index, unit_index, on)
+  alls[alliance_index].armies():item(1):units():item(unit_index).grouped = on
+end
 function SIM_select_unit(alliance_index, unit_index, on)
   local a = alls[alliance_index]
   local u = a.armies():item(1):units():item(unit_index)
@@ -68,7 +71,18 @@ def main() -> int:
                 if u["id"] == bid:
                     return u
 
+    def wait_unit(bid, pred, max_sim=60):
+        """bis zu max_sim Spielsekunden warten, bis pred(einheit) gilt (Simulation laeuft ~20x Echtzeit)"""
+        t_end = g.SIM.t + max_sim
+        while g.SIM.t < t_end:
+            u = unit(state(), bid)
+            if u and pred(u):
+                return u
+            run(1)
+        return unit(state(), bid)
+
     results = {}
+    g.SIM_group(2, 2, True)   # Einheit 2.1.2 steckt in einer Gruppe des Spielers
     g.SIM_phase("Startup"); g.SIM_phase("Deployment")
     run(5)
     # erst Befehle schicken, wenn der Feldherr die Schlacht erkannt hat (beim Start loescht er alte Befehle)
@@ -82,13 +96,17 @@ def main() -> int:
     moved = sum(1 for al in st["alliances"] for u in al["units"]
                 if ((u["x"] - start[u["id"]][0]) ** 2 + (u["z"] - start[u["id"]][1]) ** 2) ** 0.5 > 5)
     ctrl = sum(1 for al in st["alliances"] for u in al["units"] if u["controlled"])
-    results["A Aufstellung (Einheiten bewegt / uebernommen)"] = (moved >= 5 and ctrl == 9, f"{moved} bewegt, {ctrl}/9 uebernommen")
+    results["A Aufstellung (Einheiten bewegt / uebernommen)"] = (moved >= 5 and ctrl == 8, f"{moved} bewegt, {ctrl}/9 uebernommen (1 gruppiert)")
+    u = unit(st, "2.1.2")
+    results["F gruppierte Einheit gemeldet, nicht uebernommen"] = (u["grouped"] and not u["controlled"], f"grouped={u['grouped']} controlled={u['controlled']}")
+    g.SIM_group(2, 2, False)  # Spieler loest die Gruppe auf
+    u = wait_unit("2.1.2", lambda u: u["controlled"])
+    results["G nach Aufloesen automatisch uebernommen"] = (u["controlled"] and not u["grouped"], f"grouped={u['grouped']} controlled={u['controlled']}")
 
     g.SIM_select_unit(1, 1, True)
     run(3)
     (bridge / "commands.txt").write_text("sel_player\n", encoding="utf-8")
-    run(5)
-    u = unit(state(), "1.1.1")
+    u = wait_unit("1.1.1", lambda u: u["manual"])
     results["B Markierte -> Spieler"] = (u["controlled"] is False and u["manual"] is True, f"controlled={u['controlled']} manual={u['manual']}")
 
     g.SIM_phase("Deployed")
@@ -97,11 +115,11 @@ def main() -> int:
     results["C bleibt bei Schlachtbeginn beim Spieler"] = (u["controlled"] is False, f"controlled={u['controlled']}")
 
     (bridge / "commands.txt").write_text("sel_ai\n", encoding="utf-8")
-    run(5)
-    u = unit(state(), "1.1.1")
+    u = wait_unit("1.1.1", lambda u: u["controlled"])
     results["D Markierte -> KI"] = (u["controlled"] is True and u["manual"] is False, f"controlled={u['controlled']} manual={u['manual']}")
 
-    bad = [r for r in state()["order_results"] if not r["ok"]]
+    # erwartet: die Uebernahme der gruppierten Einheit wird abgelehnt - das ist kein Fehler
+    bad = [r for r in state()["order_results"] if not r["ok"] and "another group" not in (r.get("err") or "")]
     results["E keine Befehlsfehler"] = (not bad, f"{len(bad)} Fehler" + (f": {bad[:2]}" if bad else ""))
 
     g.SIM_phase("Complete")

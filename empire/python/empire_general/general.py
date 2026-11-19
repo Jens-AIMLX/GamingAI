@@ -13,7 +13,7 @@ import logging
 from pathlib import Path
 from typing import Protocol
 
-from .plan import GroupOrder, Plan
+from .plan import GroupOrder, Plan, WirePlan, to_plan
 from .units import is_cavalry
 from .world import World, bearing_to, centroid, dist
 
@@ -36,7 +36,7 @@ Tasks (one per group):
 - move: go to target_point [x, z] and stand there. shape "line" = units side by side across facing_deg \
 (unit_ids listed left to right as the troops see it when they face facing_deg), "column" = one behind the other \
 (front to back), "none" = each unit goes to target_point itself. spacing_m = gap between neighbouring units. \
-facing_deg omitted = towards the enemy army. waypoints = points to pass first (a flank march). Units on the move \
+facing_deg -1 = towards the enemy army. waypoints = points to pass first (a flank march). Units on the move \
 face the way they march; a line forms when they arrive.
 - attack: every unit of the group attacks target_unit: infantry and artillery move into range and fire at it, \
 cavalry charges it. run=true for a charge. Changing a target cancels a charge in progress, so keep targets \
@@ -53,6 +53,8 @@ for skirmishers, artillery and the general's bodyguard.
 optionally only enemy_units), routed (side ally/enemy), arrived, after (seconds); orders attack (the enemy that \
 set it off), fall_back (distance_m), hold, move (target_point). Each fires once and holds until your next plan. \
 Use the PREDICTED section to set them up before contact.
+
+Answer format: every field of every group is required. For fields that do not apply use 0 (numbers), -1 \n(facing_deg = towards the enemy), [] (lists and points), "none" (side) or "unchanged" (fire_at_will, skirmish).
 
 Note (required): end every plan with a short note to yourself - your next plans see your last notes, earlier \
 reports are not kept. Write what you are trying and what the enemy keeps doing.
@@ -110,7 +112,7 @@ class ClaudeGeneral:
                 max_tokens=16000,
                 system=[{"type": "text", "text": self.system, "cache_control": {"type": "ephemeral"}}],
                 messages=[{"role": "user", "content": report}],
-                output_format=Plan,
+                output_format=WirePlan,   # vereinfachtes Schema, siehe plan.py
                 output_config={"effort": self.effort},
                 betas=["server-side-fallback-2026-07-01"],
                 fallbacks="default",  # bei einer Ablehnung uebernimmt serverseitig ein anderes Modell
@@ -131,7 +133,7 @@ class ClaudeGeneral:
             raise RuntimeError("Modell hat den Plan abgelehnt (refusal)")
         if resp.parsed_output is None:
             raise RuntimeError(f"kein gueltiger Plan (stop_reason {resp.stop_reason})")
-        return resp.parsed_output
+        return to_plan(resp.parsed_output)
 
     def plan_deployment(self, report: str, world: World, alliance: int) -> Plan:
         """Aufstellung: gleicher Aufruf, der Bericht (describe_deployment) enthaelt Aufgabe und Aufstellungsprompt."""
@@ -183,7 +185,7 @@ class RuleGeneral:
         Kavallerie geteilt auf beide Fluegel."""
         import math
         # in der Aufstellung ist noch nichts uebernommen: alle Einheiten ausser den dem Spieler ueberlassenen
-        mine = [u for u in world.side(alliance) if not u.manual]
+        mine = [u for u in world.side(alliance) if not u.manual and not u.grouped]
         foes = world.enemies(alliance)
         cm, ce = centroid(mine), centroid(foes)
         if not mine or not cm or not ce:

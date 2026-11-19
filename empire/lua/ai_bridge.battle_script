@@ -123,7 +123,7 @@ end
 battle = empire_battle:new()
 
 AIB = {
-	cfg = { control = "enemy", player_alliance = "auto", tick_ms = 1000 },
+	cfg = { control = "enemy", player_alliance = "auto", tick_ms = 1000, own_groups = false },
 	alliances = {}, byid = {},
 	phase = "Startup", seq = 0, last_order_seq = 0,
 	player = nil, player_source = nil,
@@ -172,7 +172,8 @@ end
 -- ------------------------------------------------------------
 local function unit_state(e)
 	local s = { id = e.id, type = e.type, controlled = e.controlled and true or false,
-		selected = e.selected and true or false, manual = e.manual and true or false }
+		selected = e.selected and true or false, manual = e.manual and true or false,
+		grouped = e.grouped and true or false }
 	pcall(function()
 		local p = e.unit:position()
 		s.x, s.y, s.z = p:get_x(), p:get_y(), p:get_z()
@@ -212,20 +213,63 @@ end
 -- ------------------------------------------------------------
 local function ensure_ctrl(e)
 	if not e.ctrl then
-		e.ctrl = e.army:create_unit_controller()
-		e.ctrl:add_units(e.unit)
+		local c = e.army:create_unit_controller()
+		c:add_units(e.unit)   -- scheitert z. B. bei Einheiten in einer Gruppe des Spielers; dann bleibt e.ctrl leer
+		e.ctrl = c
 	end
 	return e.ctrl
 end
 
+-- Uebernehmen. Scheitert es (Einheit im Spiel gruppiert), bleibt der Wunsch bestehen und AIB_Tick versucht es
+-- alle 10 s erneut - sobald die Gruppe im Spiel aufgeloest ist, greift die Uebernahme.
 local function take(e)
-	ensure_ctrl(e):take_control()
-	e.controlled = true
+	e.want = true
+	local ok, err = pcall(function() ensure_ctrl(e):take_control() end)
+	if ok then
+		e.controlled, e.grouped, e.take_err = true, false, nil
+		return
+	end
+	e.controlled = false
+	e.take_err = tostring(err)
+	e.grouped = string.find(e.take_err, "group", 1, true) ~= nil
+	-- Schalter "eigenes Gruppenmanagement": Einheit samt ihrer Spielergruppe ueber add_group uebernehmen
+	-- (Signatur in der Script-API undokumentiert - das Ergebnis wird einmal je Einheit protokolliert)
+	if e.grouped and AIB.cfg.own_groups then
+		local ok2, err2 = pcall(function()
+			local c = e.army:create_unit_controller()
+			c:add_group(e.unit)
+			c:take_control()
+			e.ctrl = c
+		end)
+		if not e.group_logged then
+			e.group_logged = true
+			log("own_groups: add_group fuer " .. e.id .. ": " .. (ok2 and "OK" or ("FEHLER " .. tostring(err2))))
+		end
+		if ok2 then
+			e.controlled, e.grouped, e.take_err, e.via_group = true, false, nil, true
+			return
+		end
+	end
+	error(err, 0)
 end
 
 local function release(e)
+	e.want = false
 	if e.ctrl then e.ctrl:release_control() end
 	e.controlled = false
+end
+
+local last_retry = -1e9
+local function retry_takes()
+	if now() - last_retry < 10 then return end
+	last_retry = now()
+	for _, entry in ipairs(AIB.alliances) do
+		for _, e in ipairs(entry.units) do
+			if e.want and not e.controlled and not e.manual then
+				if pcall(take, e) then log("Einheit " .. e.id .. " jetzt uebernommen (Gruppe aufgeloest?)") end
+			end
+		end
+	end
 end
 
 local function convert_arg(a, e)
@@ -302,7 +346,9 @@ local function apply_control()
 			for _, e in ipairs(entry.units) do
 				if not e.manual then
 					local ok, err = pcall(take, e)
-					if ok then n = n + 1 else log("take_control " .. e.id .. " FEHLER: " .. tostring(err)) end
+					if ok then n = n + 1
+					elseif e.grouped then log("Einheit " .. e.id .. " ist im Spiel gruppiert - Uebernahme sobald die Gruppe aufgeloest ist")
+					else log("take_control " .. e.id .. " FEHLER: " .. tostring(err)) end
 				end
 			end
 			log(string.format("Allianz %d uebernommen (%d Einheiten, Modus %s)", a, n, mode))
@@ -316,6 +362,8 @@ end
 function AIB_Tick()
 	local ok, err = pcall(poll_orders)
 	if not ok then log("poll_orders FEHLER: " .. tostring(err)) end
+	ok, err = pcall(retry_takes)
+	if not ok then log("retry_takes FEHLER: " .. tostring(err)) end
 	ok, err = pcall(write_state)
 	if not ok then log("write_state FEHLER: " .. tostring(err)) end
 end
@@ -371,6 +419,6 @@ reg("selection handler", function() battle:register_unit_selection_handler("AIB_
 reg("command handler", function() battle:register_command_handler("AIB_Command") end)
 reg("tick timer", function() battle:register_repeating_timer("AIB_Tick", AIB.cfg.tick_ms) end)
 
-log(string.format("==== Bridge geladen: %d Allianzen, Modus %s, Takt %d ms, letzte Befehls-seq %d",
-	#AIB.alliances, tostring(AIB.cfg.control), AIB.cfg.tick_ms, AIB.last_order_seq))
+log(string.format("==== Bridge geladen: %d Allianzen, Modus %s, eigenes Gruppenmanagement %s, Takt %d ms, letzte Befehls-seq %d",
+	#AIB.alliances, tostring(AIB.cfg.control), tostring(AIB.cfg.own_groups), AIB.cfg.tick_ms, AIB.last_order_seq))
 pcall(write_state)

@@ -45,12 +45,12 @@ MODELS = {
 }
 SIDES = [("Gegner", "enemy"), ("Meine Armee", "player"), ("Beide Seiten", "both"), ("Aus", "none")]
 EFFORTS = ["low", "medium", "high"]
-ACTIONS = [("Aufstellung übernehmen  (Strg+Alt+A)", "deploy"),
-           ("Markierte → KI  (Strg+Alt+K)", "sel_ai"),
-           ("Markierte → Spieler  (Strg+Alt+P)", "sel_player")]
+ACTIONS = [("Aufstellung übernehmen", "deploy"), ("Markierte → KI", "sel_ai"), ("Markierte → Spieler", "sel_player")]
+DEFAULT_HOTKEYS = {"deploy": "F9", "sel_ai": "F10", "sel_player": "F11"}
 
 DEFAULTS = {"model": next(iter(MODELS)), "effort": "low", "interval": 10, "close_interval": 5,
             "strategy": "standard", "strategy_drafts": {}, "instructions": "", "deploy_prompt": "",
+            "hotkeys": dict(DEFAULT_HOTKEYS), "own_groups": False,
             "geometry": "1000x900"}
 
 
@@ -94,13 +94,15 @@ def settings_save(s: dict) -> None:
     os.replace(tmp, SETTINGS)
 
 
-def read_control() -> str:
+def read_config() -> tuple[str, bool]:
+    """(control, own_groups) aus <Spiel>/ai_bridge/config.lua."""
     try:
         text = (EmpireBridge().dir / "config.lua").read_text(encoding="utf-8")
         m = re.search(r'control\s*=\s*"(\w+)"', text)
-        return m.group(1) if m else "enemy"
+        g = re.search(r'own_groups\s*=\s*(true|false)', text)
+        return (m.group(1) if m else "enemy", bool(g and g.group(1) == "true"))
     except (FileNotFoundError, SystemExit):
-        return "enemy"
+        return ("enemy", False)
 
 
 class App(tk.Tk):
@@ -155,13 +157,19 @@ class App(tk.Tk):
         f = ttk.LabelFrame(root, text="Schlacht", padding=6)
         f.grid(row=1, column=0, sticky="ew", **pad)
         ttk.Label(f, text="KI führt:").grid(row=0, column=0, sticky="w")
-        self.control_var = tk.StringVar(value=read_control())
+        control, own_groups = read_config()
+        self.control_var = tk.StringVar(value=control)
         side_box = ttk.Frame(f)
         side_box.grid(row=0, column=1, columnspan=5, sticky="w")
         for label, val in SIDES:
             ttk.Radiobutton(side_box, text=label, value=val, variable=self.control_var,
                             command=self._write_control).pack(side="left", padx=(0, 12))
         ttk.Label(f, text="(gilt ab der nächsten Schlacht)", foreground="#777").grid(row=0, column=6, sticky="w")
+        self.own_groups_var = tk.BooleanVar(value=own_groups)
+        ttk.Checkbutton(f, text="Eigenes Gruppenmanagement – die KI übernimmt auch Einheiten in meinen Gruppen "
+                                "(Versuch über add_group, Ergebnis im Protokoll)",
+                        variable=self.own_groups_var, command=self._write_control).grid(
+            row=3, column=0, columnspan=7, sticky="w", pady=(6, 0))
 
         ttk.Label(f, text="Feldherr:").grid(row=1, column=0, sticky="w", pady=(6, 0))
         self.model_var = tk.StringVar(value=self.s["model"] if self.s["model"] in MODELS else DEFAULTS["model"])
@@ -235,10 +243,19 @@ class App(tk.Tk):
         act = ttk.Frame(f)
         act.grid(row=1, column=0, sticky="ew", pady=(6, 0))
         self.action_btns = []
+        self.hotkey_vars: dict[str, tk.StringVar] = {}
+        hk = {**DEFAULT_HOTKEYS, **(self.s.get("hotkeys") or {})}
         for label, cmd in ACTIONS:
             b = ttk.Button(act, text=label, command=lambda c=cmd: self._action(c), state="disabled")
-            b.pack(side="left", padx=(0, 6))
+            b.pack(side="left", padx=(0, 2))
+            v = tk.StringVar(value=hk[cmd])
+            ttk.Entry(act, textvariable=v, width=12).pack(side="left", padx=(0, 12))
+            v.trace_add("write", lambda *a: self._schedule_save())
+            self.hotkey_vars[cmd] = v
             self.action_btns.append(b)
+        ttk.Label(f, text="Feld rechts neben jedem Button = Hotkey (z. B. F9, Pause, Num5, Strg+Shift+F9). Empire sieht "
+                          "jede Taste ebenfalls – Tasten wählen, die das Spiel nicht belegt. Gilt ab dem nächsten Start.",
+                  foreground="#777").grid(row=3, column=0, sticky="w", pady=(4, 0))
         self.log = tk.Text(f, height=10, wrap="word", state="disabled", font=("Consolas", 9), background="#fafafa")
         self.log.grid(row=2, column=0, sticky="nsew", pady=(6, 0))
         sb = ttk.Scrollbar(f, command=self.log.yview)
@@ -301,7 +318,7 @@ class App(tk.Tk):
     # ---------- Modus ----------
     def _write_control(self) -> None:
         try:
-            EmpireBridge().write_config(control=self.control_var.get())
+            EmpireBridge().write_config(control=self.control_var.get(), own_groups=self.own_groups_var.get())
             self._append(f"Modus gespeichert: KI führt '{self.control_var.get()}' (ab der nächsten Schlacht).\n")
         except (Exception, SystemExit) as e:
             messagebox.showerror("config.lua", str(e))
@@ -388,6 +405,8 @@ class App(tk.Tk):
                        "control": self.control_var.get(),
                        "instructions": self.instr_text.get("1.0", "end").strip(),
                        "deploy_prompt": self.deploy_text.get("1.0", "end").strip(),
+                       "hotkeys": {c: v.get().strip() for c, v in self.hotkey_vars.items()},
+                       "own_groups": self.own_groups_var.get(),
                        "geometry": self.geometry()})
         return self.s
 
@@ -428,7 +447,8 @@ class App(tk.Tk):
         cmd = [sys.executable, str(HERE / "commander.py"), "--backend", backend, "--effort", s["effort"],
                "--interval", str(s["interval"]), "--close-interval", str(s["close_interval"]),
                "--strategy", str(strat_file), "--instructions", str(RUNTIME / "instructions.txt"),
-               "--deploy-prompt", str(RUNTIME / "deploy_prompt.txt")]
+               "--deploy-prompt", str(RUNTIME / "deploy_prompt.txt"),
+               "--hotkeys", ",".join(f"{c}={k}" for c, k in s["hotkeys"].items() if k)]
         if model:
             cmd += ["--model", model]
         self._write_control()

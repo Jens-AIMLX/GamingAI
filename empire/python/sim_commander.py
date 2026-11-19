@@ -61,7 +61,11 @@ local function mkarmy(us)
   function a:units() return list(self.us) end
   function a:create_unit_controller()
     local c = { units = {} }
-    function c:add_units(u) self.units[#self.units + 1] = u end
+    function c:add_units(u)
+      if u.grouped then error("calling 'add_units' on bad self (unit is already in another group)") end
+      self.units[#self.units + 1] = u
+    end
+    function c:add_group(u) self.units[#self.units + 1] = u end
     function c:take_control() end
     function c:release_control() end
     function c:goto_location(v) for _, u in ipairs(self.units) do u.target = vec(v.x, v.y, v.z); u.attack = nil end end

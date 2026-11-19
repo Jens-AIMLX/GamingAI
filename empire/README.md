@@ -75,11 +75,22 @@ als deine). Ab Schlachtbeginn übernimmt der Feldherr.
 
 | Hotkey | Button | Wirkung |
 |---|---|---|
-| **Strg+Alt+A** | Aufstellung übernehmen | Der Feldherr stellt die gesteuerten Seiten nach dem Aufstellungsprompt auf. Er übernimmt die Einheiten schon in der Aufstellungsphase; ob das Spiel dort Bewegungen zulässt, meldet das Protokoll – sonst marschieren sie direkt nach Schlachtbeginn an ihre Plätze. |
-| **Strg+Alt+K** | Markierte → KI | Die im Spiel markierten Einheiten werden übernommen und von der KI eingeplant. |
-| **Strg+Alt+P** | Markierte → Spieler | Die markierten Einheiten werden freigegeben; die KI plant sie nicht mehr ein, auch nicht bei Schlachtbeginn, bis sie mit Strg+Alt+K zurückgegeben werden. |
+| **F9** | Aufstellung übernehmen | Der Feldherr stellt die gesteuerten Seiten nach dem Aufstellungsprompt auf. Er übernimmt die Einheiten schon in der Aufstellungsphase; ob das Spiel dort Bewegungen zulässt, meldet das Protokoll – sonst marschieren sie direkt nach Schlachtbeginn an ihre Plätze. |
+| **F10** | Markierte → KI | Die im Spiel markierten Einheiten werden übernommen und von der KI eingeplant. |
+| **F11** | Markierte → Spieler | Die markierten Einheiten werden freigegeben; die KI plant sie nicht mehr ein, auch nicht bei Schlachtbeginn, bis sie mit F10 zurückgegeben werden. |
 
+Die Tasten sind im Steuerpult einstellbar (Feld neben jedem Button, z. B. `F9`, `Pause`, `Num5`, `Strg+Shift+F9`).
+**Achtung:** Empire liest die Tastatur selbst (DirectInput) und sieht jede Taste ebenfalls – Kombinationen wie
+Strg+Alt+A kommen im Spiel als Strg+A („alle auswählen“) an. Deshalb Tasten wählen, die Empire nicht belegt.
 Die Buttons schreiben in `<Spiel>\ai_bridge\commands.txt`; der Feldherr liest die Datei laufend.
+
+### Einheiten in Gruppen des Spielers
+
+Einheiten, die im Spiel gruppiert sind, kann die Brücke nicht einzeln übernehmen (das Spiel meldet „unit is
+already in another group“). Sie werden im Protokoll gemeldet und automatisch übernommen, sobald die Gruppe im Spiel
+aufgelöst ist (Prüfung alle 10 s). Mit dem Schalter **„Eigenes Gruppenmanagement“** versucht die Brücke stattdessen,
+die Einheit samt ihrer Gruppe über `add_group` zu übernehmen; ob das im Spiel funktioniert, steht im Brücken-Log
+(`own_groups: add_group fuer …: OK/FEHLER`).
 
 ## Ohne Steuerpult
 
