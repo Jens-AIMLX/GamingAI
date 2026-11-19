@@ -32,6 +32,8 @@ class Unit:
     leaving: bool
     missile_range: float
     controlled: bool
+    selected: bool = False  # im Spiel markiert
+    manual: bool = False    # per Hotkey an den Spieler gegeben
     vx: float = 0.0         # m/s
     vz: float = 0.0
 
@@ -75,6 +77,7 @@ class World:
     phase: str = "?"
     seq: int = 0
     player_alliance: int | None = None
+    control: str = "enemy"
     controlled_alliances: list[int] = field(default_factory=list)
     units: dict[int, Unit] = field(default_factory=dict)
     by_bid: dict[str, Unit] = field(default_factory=dict)
@@ -87,6 +90,7 @@ class World:
         self.phase = st.get("phase") or "?"
         self.seq = int(st.get("seq") or 0)
         self.player_alliance = st.get("player_alliance")
+        self.control = st.get("control") or "enemy"
         self.controlled_alliances = list(st.get("controlled_alliances") or [])
         self.order_results = list(st.get("order_results") or [])
         counters: dict[int, int] = {}
@@ -115,11 +119,29 @@ class World:
                     men=int(u.get("men") or 0), men_start=int(u.get("men_start") or 0), x=x, z=z,
                     bearing=float(u.get("bearing") or 0.0), moving=bool(u.get("moving")),
                     routing=bool(u.get("routing")), leaving=bool(u.get("leaving")), missile_range=rng,
-                    controlled=bool(u.get("controlled")), vx=vx, vz=vz)
+                    controlled=bool(u.get("controlled")), selected=bool(u.get("selected")),
+                    manual=bool(u.get("manual")), vx=vx, vz=vz)
                 self.units[uid] = unit
                 self.by_bid[bid] = unit
 
     # ---------- Sichten ----------
+    def wanted_alliances(self) -> list[int]:
+        """Allianzen, die laut config.lua von der KI gefuehrt werden (auch schon in der Aufstellung)."""
+        if self.controlled_alliances:
+            return list(self.controlled_alliances)
+        player = self.player_alliance or 1
+        alls = sorted({u.alliance for u in self.units.values()})
+        if self.control == "both":
+            return alls
+        if self.control == "player":
+            return [player]
+        if self.control == "enemy":
+            return [a for a in alls if a != player]
+        return []
+
+    def selected(self) -> list[Unit]:
+        return [u for u in self.units.values() if u.selected]
+
     def side(self, alliance: int, alive: bool = True) -> list[Unit]:
         return [u for u in self.units.values() if u.alliance == alliance and (u.alive or not alive)]
 

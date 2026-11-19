@@ -133,6 +133,10 @@ class ClaudeGeneral:
             raise RuntimeError(f"kein gueltiger Plan (stop_reason {resp.stop_reason})")
         return resp.parsed_output
 
+    def plan_deployment(self, report: str, world: World, alliance: int) -> Plan:
+        """Aufstellung: gleicher Aufruf, der Bericht (describe_deployment) enthaelt Aufgabe und Aufstellungsprompt."""
+        return self.plan(report, world, alliance)
+
 
 class RuleGeneral:
     """Ohne Sprachmodell: Artillerie haelt und feuert, Infanterie rueckt in Linie bis 120 m vor und greift dann
@@ -173,6 +177,41 @@ class RuleGeneral:
             groups.append(GroupOrder(name="cavalry", unit_ids=[u.id for u in cav], task="halt", engage_within_m=100))
         return Plan(intent=f"advance the line to musket range ({d:.0f} m apart), artillery holds",
                     note="rule-based general", groups=groups)
+
+    def plan_deployment(self, report: str, world: World, alliance: int) -> Plan:
+        """Ohne Modell: Infanterie-Linie am Heeresschwerpunkt mit Front zum Feind, Artillerie 40 m dahinter,
+        Kavallerie geteilt auf beide Fluegel."""
+        import math
+        # in der Aufstellung ist noch nichts uebernommen: alle Einheiten ausser den dem Spieler ueberlassenen
+        mine = [u for u in world.side(alliance) if not u.manual]
+        foes = world.enemies(alliance)
+        cm, ce = centroid(mine), centroid(foes)
+        if not mine or not cm or not ce:
+            return Plan(intent="nothing to deploy", note="", groups=[])
+        face = bearing_to(cm, ce)
+        fx, fz = math.sin(math.radians(face)), math.cos(math.radians(face))
+        rx, rz = math.cos(math.radians(face)), -math.sin(math.radians(face))
+        art = [u for u in mine if u.role == "artillery"]
+        cav = [u for u in mine if is_cavalry(u.role)]
+        inf = [u for u in mine if u not in art and u not in cav]
+        side = lambda u: (u.x - cm[0]) * rx + (u.z - cm[1]) * rz
+        groups: list[GroupOrder] = []
+        if inf:
+            inf.sort(key=side)
+            groups.append(GroupOrder(name="infantry line", unit_ids=[u.id for u in inf], task="move",
+                                     target_point=[cm[0], cm[1]], facing_deg=face, shape="line", spacing_m=6))
+        if art:
+            groups.append(GroupOrder(name="artillery", unit_ids=[u.id for u in art], task="move",
+                                     target_point=[cm[0] - fx * 40, cm[1] - fz * 40], facing_deg=face, shape="line",
+                                     spacing_m=10))
+        width = 30.0 * max(len(inf), 1)
+        for name, units, sgn in (("left cavalry", cav[: len(cav) // 2], -1), ("right cavalry", cav[len(cav) // 2:], 1)):
+            if units:
+                groups.append(GroupOrder(name=name, unit_ids=[u.id for u in units], task="move",
+                                         target_point=[cm[0] + rx * sgn * (width / 2 + 40), cm[1] + rz * sgn * (width / 2 + 40)],
+                                         facing_deg=face, shape="line", spacing_m=6))
+        return Plan(intent="deploy: infantry line facing the enemy, artillery behind, cavalry on both wings",
+                    note="rule-based deployment", groups=groups)
 
 
 def make_general(backend: str, model: str | None, effort: str, rules: str, strategy: str,

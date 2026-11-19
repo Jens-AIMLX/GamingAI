@@ -62,10 +62,24 @@ Doppelklick auf `start_ui.bat` (oder `python python\ui.py`):
 - **Feldherr:** Claude Opus 5.5, Sonnet 5.5, Haiku 5.5 oder Regel-Feldherr; Denktiefe; Planungstakt.
 - **Strategie:** Vorlage wählen, bearbeiten, speichern oder als neue Vorlage anlegen; dazu freie
   **Zusatzbefehle** für die nächste Schlacht.
+- **Aufstellung:** freier Prompt, wie aufgestellt werden soll (wird bei jedem Auslösen neu gelesen).
 - **▶ Starten** startet den Feldherrn, das Protokoll läuft live mit.
+- Alle Einstellungen, Prompts und ungespeicherte Strategie-Entwürfe werden laufend in `python\settings.json`
+  gesichert (lokal, nicht im Repo) und beim nächsten Start wiederhergestellt; der Schlüssel bleibt in der
+  Windows-Anmeldeinformationsverwaltung.
 
 In der Aufstellung **eine eigene Einheit anklicken** – so erkennt die Brücke deine Seite (sonst gilt Allianz 1
 als deine). Ab Schlachtbeginn übernimmt der Feldherr.
+
+### Hotkeys (solange der Feldherr läuft, auch wenn Empire im Vordergrund ist)
+
+| Hotkey | Button | Wirkung |
+|---|---|---|
+| **Strg+Alt+A** | Aufstellung übernehmen | Der Feldherr stellt die gesteuerten Seiten nach dem Aufstellungsprompt auf. Er übernimmt die Einheiten schon in der Aufstellungsphase; ob das Spiel dort Bewegungen zulässt, meldet das Protokoll – sonst marschieren sie direkt nach Schlachtbeginn an ihre Plätze. |
+| **Strg+Alt+K** | Markierte → KI | Die im Spiel markierten Einheiten werden übernommen und von der KI eingeplant. |
+| **Strg+Alt+P** | Markierte → Spieler | Die markierten Einheiten werden freigegeben; die KI plant sie nicht mehr ein, auch nicht bei Schlachtbeginn, bis sie mit Strg+Alt+K zurückgegeben werden. |
+
+Die Buttons schreiben in `<Spiel>\ai_bridge\commands.txt`; der Feldherr liest die Datei laufend.
 
 ## Ohne Steuerpult
 
@@ -86,6 +100,7 @@ Welche Seite geführt wird, steht in `<Spiel>\ai_bridge\config.lua`. Jede Schlac
 |---|---|
 | `python sim_test.py` | Brücke offline (echtes Lua 5.1 gegen nachgebaute API) |
 | `python sim_commander.py` | ganze Kette offline mit Regel-Feldherr |
+| `python sim_deploy.py` | Aufstellung per Befehl und Übergabe markierter Einheiten (KI ↔ Spieler) offline |
 | `python selftest.py` | Brücke im echten Spiel, PASS/FAIL-Marker |
 
 ## Bekannte Grenzen

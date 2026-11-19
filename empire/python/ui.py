@@ -8,7 +8,11 @@ ui.py - Steuerpult fuer den Empire-Feldherrn.
 - Modus: welche Seite das Modell fuehrt (schreibt <Spielordner>/ai_bridge/config.lua, wirkt ab der naechsten Schlacht).
 - Feldherr: Claude-Modell oder Regel-Feldherr, Denktiefe, Planungstakt.
 - Strategie: Vorlagen aus strategies/*.md (bearbeitbar, als neue Vorlage speicherbar) + freie Zusatzbefehle.
-- Start/Stopp von commander.py mit Live-Protokoll.
+- Aufstellungsprompt: wird bei jedem Strg+Alt+A (oder Button) neu gelesen.
+- Aktionen in der Schlacht: Aufstellung uebernehmen, markierte Einheiten -> KI / -> Spieler
+  (Buttons oder globale Hotkeys Strg+Alt+A / K / P, solange der Feldherr laeuft).
+- Alle Einstellungen, Prompts und ungespeicherten Strategie-Entwuerfe werden laufend in settings.json gesichert
+  (lokal, nicht im Repo) und beim naechsten Start wiederhergestellt.
 """
 from __future__ import annotations
 
@@ -41,9 +45,13 @@ MODELS = {
 }
 SIDES = [("Gegner", "enemy"), ("Meine Armee", "player"), ("Beide Seiten", "both"), ("Aus", "none")]
 EFFORTS = ["low", "medium", "high"]
+ACTIONS = [("Aufstellung übernehmen  (Strg+Alt+A)", "deploy"),
+           ("Markierte → KI  (Strg+Alt+K)", "sel_ai"),
+           ("Markierte → Spieler  (Strg+Alt+P)", "sel_player")]
 
 DEFAULTS = {"model": next(iter(MODELS)), "effort": "low", "interval": 10, "close_interval": 5,
-            "strategy": "standard", "control": "enemy"}
+            "strategy": "standard", "strategy_drafts": {}, "instructions": "", "deploy_prompt": "",
+            "geometry": "1000x900"}
 
 
 # ---------------- Schluessel ----------------
@@ -77,11 +85,13 @@ def settings_load() -> dict:
     try:
         return {**DEFAULTS, **json.loads(SETTINGS.read_text(encoding="utf-8"))}
     except (FileNotFoundError, json.JSONDecodeError):
-        return dict(DEFAULTS)
+        return json.loads(json.dumps(DEFAULTS))
 
 
 def settings_save(s: dict) -> None:
-    SETTINGS.write_text(json.dumps(s, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp = SETTINGS.with_suffix(".tmp")
+    tmp.write_text(json.dumps(s, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, SETTINGS)
 
 
 def read_control() -> str:
@@ -89,7 +99,7 @@ def read_control() -> str:
         text = (EmpireBridge().dir / "config.lua").read_text(encoding="utf-8")
         m = re.search(r'control\s*=\s*"(\w+)"', text)
         return m.group(1) if m else "enemy"
-    except FileNotFoundError:
+    except (FileNotFoundError, SystemExit):
         return "enemy"
 
 
@@ -97,24 +107,36 @@ class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Empire Battle AI – Steuerpult")
-        self.geometry("980x780")
-        self.minsize(820, 640)
         self.s = settings_load()
+        self.geometry(self.s.get("geometry") or DEFAULTS["geometry"])
+        self.minsize(860, 760)
         self.proc: subprocess.Popen | None = None
         self.q: queue.Queue[str] = queue.Queue()
+        self._save_job: str | None = None
+        self._loading = True
         self._build()
         self._refresh_key_status()
         self._load_strategy(self.s.get("strategy", "standard"))
-        self.after(150, self._pump)
+        self._loading = False
+        self._write_runtime()
+        self._pump_job = self.after(150, self._pump)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ---------- Aufbau ----------
+    def _text(self, parent, height: int, content: str) -> tk.Text:
+        t = tk.Text(parent, height=height, wrap="word", undo=True, font=("Segoe UI", 9))
+        t.insert("1.0", content)
+        t.edit_reset()
+        t.bind("<KeyRelease>", lambda e: self._schedule_save())
+        t.bind("<<Paste>>", lambda e: self.after(50, self._schedule_save))
+        return t
+
     def _build(self) -> None:
         pad = {"padx": 8, "pady": 4}
         root = ttk.Frame(self, padding=8)
         root.pack(fill="both", expand=True)
         root.columnconfigure(0, weight=1)
-        root.rowconfigure(3, weight=1)
+        root.rowconfigure(4, weight=1)
 
         # Zugang
         f = ttk.LabelFrame(root, text="Zugang zu Claude", padding=6)
@@ -146,7 +168,7 @@ class App(tk.Tk):
         ttk.Combobox(f, textvariable=self.model_var, values=list(MODELS), state="readonly", width=44).grid(
             row=1, column=1, columnspan=3, sticky="w", pady=(6, 0))
         ttk.Label(f, text="Denktiefe:").grid(row=1, column=4, sticky="e", padx=(12, 2), pady=(6, 0))
-        self.effort_var = tk.StringVar(value=self.s["effort"])
+        self.effort_var = tk.StringVar(value=self.s["effort"] if self.s["effort"] in EFFORTS else "low")
         ttk.Combobox(f, textvariable=self.effort_var, values=EFFORTS, state="readonly", width=8).grid(
             row=1, column=5, sticky="w", pady=(6, 0))
 
@@ -159,8 +181,10 @@ class App(tk.Tk):
         ttk.Label(tb, text=" s Spielzeit, im Nahkampf alle ").pack(side="left")
         ttk.Spinbox(tb, from_=2, to=30, textvariable=self.cint_var, width=4).pack(side="left")
         ttk.Label(tb, text=" s   (kürzer = reaktiver, aber mehr Aufrufe/Kosten)", foreground="#777").pack(side="left")
+        for v in (self.model_var, self.effort_var, self.int_var, self.cint_var):
+            v.trace_add("write", lambda *a: self._schedule_save())
 
-        # Strategie
+        # Strategie + Zusatzbefehle
         f = ttk.LabelFrame(root, text="Strategie (System-Prompt)", padding=6)
         f.grid(row=2, column=0, sticky="ew", **pad)
         f.columnconfigure(1, weight=1)
@@ -168,25 +192,37 @@ class App(tk.Tk):
         self.strat_var = tk.StringVar()
         self.strat_box = ttk.Combobox(f, textvariable=self.strat_var, state="readonly", width=30)
         self.strat_box.grid(row=0, column=1, sticky="w")
-        self.strat_box.bind("<<ComboboxSelected>>", lambda e: self._load_strategy(self.strat_var.get()))
+        self.strat_box.bind("<<ComboboxSelected>>", lambda e: self._switch_strategy())
         bb = ttk.Frame(f)
         bb.grid(row=0, column=2, sticky="e")
+        self.draft_label = ttk.Label(bb, text="", foreground="#b35900")
+        self.draft_label.pack(side="left", padx=6)
         ttk.Button(bb, text="Speichern", command=self._strategy_save).pack(side="left", padx=2)
         ttk.Button(bb, text="Als neue Vorlage…", command=self._strategy_save_as).pack(side="left", padx=2)
-        self.strat_text = tk.Text(f, height=9, wrap="word", undo=True, font=("Segoe UI", 9))
+        ttk.Button(bb, text="Verwerfen", command=self._strategy_discard).pack(side="left", padx=2)
+        self.strat_text = self._text(f, 8, "")
         self.strat_text.grid(row=1, column=0, columnspan=3, sticky="ew", pady=4)
-        ttk.Label(f, text="Nur Zeilen mit „- “ gehen an das Modell. Zusatzbefehle für diese Schlacht (freier Text, "
+        ttk.Label(f, text="Nur Zeilen mit „- “ gehen an das Modell. Zusatzbefehle für die Schlacht (freier Text, "
                           "z. B. „Halte den Hügel im Westen um jeden Preis“):", foreground="#555").grid(
             row=2, column=0, columnspan=3, sticky="w")
-        self.instr_text = tk.Text(f, height=3, wrap="word", undo=True, font=("Segoe UI", 9))
+        self.instr_text = self._text(f, 3, self.s.get("instructions", ""))
         self.instr_text.grid(row=3, column=0, columnspan=3, sticky="ew", pady=4)
-        self.instr_text.insert("1.0", self.s.get("instructions", ""))
+
+        # Aufstellung
+        f = ttk.LabelFrame(root, text="Aufstellung (Prompt für Strg+Alt+A – wird bei jedem Auslösen neu gelesen)", padding=6)
+        f.grid(row=3, column=0, sticky="ew", **pad)
+        f.columnconfigure(0, weight=1)
+        ttk.Label(f, text="Wie soll aufgestellt werden? z. B. „Infanterie in zwei Linien, Artillerie auf dem Hügel "
+                          "rechts, Kavallerie als Reserve hinter dem linken Flügel“", foreground="#555").grid(
+            row=0, column=0, sticky="w")
+        self.deploy_text = self._text(f, 4, self.s.get("deploy_prompt", ""))
+        self.deploy_text.grid(row=1, column=0, sticky="ew", pady=4)
 
         # Steuerung + Protokoll
         f = ttk.LabelFrame(root, text="Feldherr", padding=6)
-        f.grid(row=3, column=0, sticky="nsew", **pad)
+        f.grid(row=4, column=0, sticky="nsew", **pad)
         f.columnconfigure(0, weight=1)
-        f.rowconfigure(1, weight=1)
+        f.rowconfigure(2, weight=1)
         bar = ttk.Frame(f)
         bar.grid(row=0, column=0, sticky="ew")
         self.start_btn = ttk.Button(bar, text="▶ Starten", command=self._start)
@@ -196,17 +232,25 @@ class App(tk.Tk):
         ttk.Button(bar, text="Logs öffnen", command=self._open_logs).pack(side="left", padx=4)
         self.run_status = ttk.Label(bar, text="gestoppt", foreground="#555")
         self.run_status.pack(side="left", padx=12)
-        self.log = tk.Text(f, height=12, wrap="word", state="disabled", font=("Consolas", 9), background="#fafafa")
-        self.log.grid(row=1, column=0, sticky="nsew", pady=(6, 0))
+        act = ttk.Frame(f)
+        act.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        self.action_btns = []
+        for label, cmd in ACTIONS:
+            b = ttk.Button(act, text=label, command=lambda c=cmd: self._action(c), state="disabled")
+            b.pack(side="left", padx=(0, 6))
+            self.action_btns.append(b)
+        self.log = tk.Text(f, height=10, wrap="word", state="disabled", font=("Consolas", 9), background="#fafafa")
+        self.log.grid(row=2, column=0, sticky="nsew", pady=(6, 0))
         sb = ttk.Scrollbar(f, command=self.log.yview)
-        sb.grid(row=1, column=1, sticky="ns", pady=(6, 0))
+        sb.grid(row=2, column=1, sticky="ns", pady=(6, 0))
         self.log["yscrollcommand"] = sb.set
 
     # ---------- Schluessel ----------
     def _refresh_key_status(self) -> None:
         k = key_load()
         if k:
-            self.key_status.config(text=f"Gespeichert in der Windows-Anmeldeinformationsverwaltung: {mask(k)}")
+            self.key_status.config(text=f"Gespeichert in der Windows-Anmeldeinformationsverwaltung: {mask(k)} "
+                                        "(bleibt zwischen Sitzungen erhalten)")
         elif os.environ.get("ANTHROPIC_API_KEY"):
             self.key_status.config(text="Kein Schlüssel gespeichert – nutze ANTHROPIC_API_KEY aus der Umgebung.")
         else:
@@ -259,12 +303,16 @@ class App(tk.Tk):
         try:
             EmpireBridge().write_config(control=self.control_var.get())
             self._append(f"Modus gespeichert: KI führt '{self.control_var.get()}' (ab der nächsten Schlacht).\n")
-        except Exception as e:
+        except (Exception, SystemExit) as e:
             messagebox.showerror("config.lua", str(e))
 
     # ---------- Strategie ----------
     def _strategy_names(self) -> list[str]:
         return sorted(p.stem for p in STRATEGIES.glob("*.md"))
+
+    def _strategy_file_text(self, name: str) -> str:
+        p = STRATEGIES / f"{name}.md"
+        return p.read_text(encoding="utf-8") if p.exists() else ""
 
     def _load_strategy(self, name: str) -> None:
         names = self._strategy_names()
@@ -272,16 +320,28 @@ class App(tk.Tk):
         if name not in names and names:
             name = "standard" if "standard" in names else names[0]
         self.strat_var.set(name)
+        draft = (self.s.get("strategy_drafts") or {}).get(name)
         self.strat_text.delete("1.0", "end")
-        p = STRATEGIES / f"{name}.md"
-        if p.exists():
-            self.strat_text.insert("1.0", p.read_text(encoding="utf-8"))
+        self.strat_text.insert("1.0", draft if draft is not None else self._strategy_file_text(name))
+        self.strat_text.edit_reset()
+        self._update_draft_label()
+
+    def _switch_strategy(self) -> None:
+        self._load_strategy(self.strat_var.get())
+        self._schedule_save()
+
+    def _update_draft_label(self) -> None:
+        name = self.strat_var.get()
+        is_draft = name in (self.s.get("strategy_drafts") or {})
+        self.draft_label.config(text="ungespeicherter Entwurf (wird trotzdem verwendet)" if is_draft else "")
 
     def _strategy_save(self) -> None:
         name = self.strat_var.get()
         if not name:
             return self._strategy_save_as()
         (STRATEGIES / f"{name}.md").write_text(self.strat_text.get("1.0", "end").rstrip() + "\n", encoding="utf-8")
+        self.s.setdefault("strategy_drafts", {}).pop(name, None)
+        self._save_now()
         self._append(f"Strategie '{name}' gespeichert.\n")
 
     def _strategy_save_as(self) -> None:
@@ -289,22 +349,69 @@ class App(tk.Tk):
         if not name:
             return
         name = re.sub(r"[^\w-]", "_", name.strip())
+        old = self.strat_var.get()
         (STRATEGIES / f"{name}.md").write_text(self.strat_text.get("1.0", "end").rstrip() + "\n", encoding="utf-8")
+        self.s.setdefault("strategy_drafts", {}).pop(old, None)
         self._load_strategy(name)
+        self._save_now()
         self._append(f"Neue Strategie '{name}' angelegt.\n")
 
-    # ---------- Start/Stopp ----------
-    def _collect(self) -> dict:
-        s = {"model": self.model_var.get(), "effort": self.effort_var.get(), "interval": int(self.int_var.get()),
-             "close_interval": int(self.cint_var.get()), "strategy": self.strat_var.get(),
-             "control": self.control_var.get(), "instructions": self.instr_text.get("1.0", "end").strip()}
-        settings_save(s)
-        return s
+    def _strategy_discard(self) -> None:
+        name = self.strat_var.get()
+        self.s.setdefault("strategy_drafts", {}).pop(name, None)
+        self._load_strategy(name)
+        self._save_now()
 
+    # ---------- Sichern ----------
+    def _schedule_save(self) -> None:
+        if self._loading:
+            return
+        if self._save_job:
+            self.after_cancel(self._save_job)
+        self._save_job = self.after(600, self._save_now)
+
+    def _collect(self) -> dict:
+        name = self.strat_var.get()
+        text = self.strat_text.get("1.0", "end").rstrip() + "\n"
+        drafts = dict(self.s.get("strategy_drafts") or {})
+        if name:
+            if text.strip() != self._strategy_file_text(name).strip():
+                drafts[name] = text
+            else:
+                drafts.pop(name, None)
+        try:
+            interval, cint = int(self.int_var.get()), int(self.cint_var.get())
+        except (tk.TclError, ValueError):
+            interval, cint = self.s.get("interval", 10), self.s.get("close_interval", 5)
+        self.s.update({"model": self.model_var.get(), "effort": self.effort_var.get(), "interval": interval,
+                       "close_interval": cint, "strategy": name, "strategy_drafts": drafts,
+                       "control": self.control_var.get(),
+                       "instructions": self.instr_text.get("1.0", "end").strip(),
+                       "deploy_prompt": self.deploy_text.get("1.0", "end").strip(),
+                       "geometry": self.geometry()})
+        return self.s
+
+    def _save_now(self) -> None:
+        self._save_job = None
+        try:
+            settings_save(self._collect())
+            self._write_runtime()
+        except Exception as e:
+            self._append(f"Einstellungen konnten nicht gespeichert werden: {e}\n")
+        self._update_draft_label()
+
+    def _write_runtime(self) -> None:
+        """Dateien, die der laufende Feldherr liest (Aufstellungsprompt wird bei jedem Strg+Alt+A neu gelesen)."""
+        RUNTIME.mkdir(exist_ok=True)
+        (RUNTIME / "deploy_prompt.txt").write_text(self.deploy_text.get("1.0", "end").strip() + "\n", encoding="utf-8")
+        (RUNTIME / "instructions.txt").write_text(self.instr_text.get("1.0", "end").strip() + "\n", encoding="utf-8")
+
+    # ---------- Start/Stopp ----------
     def _start(self) -> None:
         if self.proc and self.proc.poll() is None:
             return
-        s = self._collect()
+        self._save_now()
+        s = self.s
         backend, model = MODELS[s["model"]]
         env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
         if backend == "claude":
@@ -315,15 +422,13 @@ class App(tk.Tk):
                 if not messagebox.askyesno("Kein API-Schlüssel", "Es ist kein Schlüssel gespeichert. Trotzdem starten "
                                                                  "(z. B. mit `ant auth login`)?"):
                     return
-        RUNTIME.mkdir(exist_ok=True)
-        # aktuelle (ggf. ungespeicherte) Strategie und Zusatzbefehle fuer diesen Lauf
+        # aktuelle (ggf. ungespeicherte) Strategie fuer diesen Lauf
         strat_file = RUNTIME / f"{s['strategy'] or 'eigene'}.md"
         strat_file.write_text(self.strat_text.get("1.0", "end"), encoding="utf-8")
-        instr_file = RUNTIME / "instructions.txt"
-        instr_file.write_text(s["instructions"], encoding="utf-8")
         cmd = [sys.executable, str(HERE / "commander.py"), "--backend", backend, "--effort", s["effort"],
                "--interval", str(s["interval"]), "--close-interval", str(s["close_interval"]),
-               "--strategy", str(strat_file), "--instructions", str(instr_file)]
+               "--strategy", str(strat_file), "--instructions", str(RUNTIME / "instructions.txt"),
+               "--deploy-prompt", str(RUNTIME / "deploy_prompt.txt")]
         if model:
             cmd += ["--model", model]
         self._write_control()
@@ -334,7 +439,18 @@ class App(tk.Tk):
         threading.Thread(target=self._reader, args=(self.proc,), daemon=True).start()
         self.start_btn.config(state="disabled")
         self.stop_btn.config(state="normal")
+        for b in self.action_btns:
+            b.config(state="normal")
         self.run_status.config(text="läuft – wartet auf eine Schlacht", foreground="#1a7f37")
+
+    def _action(self, cmd: str) -> None:
+        """Wie die Hotkeys: Befehl an den laufenden Feldherrn ueber <Spiel>/ai_bridge/commands.txt."""
+        self._save_now()   # Aufstellungsprompt ist damit aktuell
+        try:
+            with (EmpireBridge().dir / "commands.txt").open("a", encoding="utf-8") as f:
+                f.write(cmd + "\n")
+        except (Exception, SystemExit) as e:
+            messagebox.showerror("Befehl", str(e))
 
     def _reader(self, proc: subprocess.Popen) -> None:
         for line in proc.stdout:
@@ -353,6 +469,8 @@ class App(tk.Tk):
                 if line == "\x00stopped":
                     self.start_btn.config(state="normal")
                     self.stop_btn.config(state="disabled")
+                    for b in self.action_btns:
+                        b.config(state="disabled")
                     self.run_status.config(text="gestoppt", foreground="#555")
                     continue
                 if "Neue Schlacht" in line or "Uebernehme" in line:
@@ -360,7 +478,7 @@ class App(tk.Tk):
                 self._append(line)
         except queue.Empty:
             pass
-        self.after(150, self._pump)
+        self._pump_job = self.after(150, self._pump)
 
     def _open_logs(self) -> None:
         (HERE / "logs").mkdir(exist_ok=True)
@@ -377,8 +495,17 @@ class App(tk.Tk):
             if not messagebox.askyesno("Beenden", "Der Feldherr läuft noch. Beenden und Fenster schließen?"):
                 return
             self.proc.terminate()
-        self._collect()
+        self._save_now()
         self.destroy()
+
+    def destroy(self) -> None:
+        for job in (getattr(self, '_pump_job', None), self._save_job):
+            if job:
+                try:
+                    self.after_cancel(job)
+                except tk.TclError:
+                    pass
+        super().destroy()
 
 
 if __name__ == "__main__":

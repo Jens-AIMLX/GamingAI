@@ -1,0 +1,123 @@
+"""
+sim_deploy.py - Offline-Test: Aufstellung per Befehl und Uebergabe markierter Einheiten (ohne Spiel, ohne Modell).
+
+Ablauf in der Simulation (Modus "both", Regel-Feldherr):
+  1. Aufstellungsphase, Befehl "deploy" ueber commands.txt (wie Button/Strg+Alt+A)
+     -> beide Seiten werden uebernommen und stellen sich auf (Linie, Artillerie dahinter, Kavallerie an den Fluegeln)
+  2. Spieler markiert Einheit 1.1.1, Befehl "sel_player" -> Einheit freigegeben, KI plant sie nicht mehr ein,
+     sie bleibt auch bei Schlachtbeginn beim Spieler
+  3. Schlachtbeginn, danach "sel_ai" -> Einheit wieder bei der KI
+    python sim_deploy.py
+"""
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+from lupa import lua51
+
+from sim_commander import MOCK, SCRIPT
+
+HERE = Path(__file__).resolve().parent
+
+EXTRA = r"""
+function SIM_select_unit(alliance_index, unit_index, on)
+  local a = alls[alliance_index]
+  local u = a.armies():item(1):units():item(unit_index)
+  _G[SIM.handlers.sel](u, on)
+end
+"""
+
+
+def main() -> int:
+    work = Path(tempfile.mkdtemp(prefix="empire_deploy_sim_"))
+    bridge = work / "ai_bridge"
+    bridge.mkdir()
+    (bridge / "config.lua").write_text('return { control = "both", player_alliance = 1, tick_ms = 1000 }\n')
+    os.chdir(work)
+    lua = lua51.LuaRuntime(unpack_returned_tuples=True)
+    lua.execute(MOCK.replace("local alls =", "alls ="))
+    lua.execute(EXTRA)
+    lua.execute(SCRIPT.read_text(encoding="latin-1"))
+    g = lua.globals()
+    prompt = work / "deploy_prompt.txt"
+    prompt.write_text("Infanterie in einer Linie, Artillerie dahinter.\n", encoding="utf-8")
+
+    env = dict(os.environ, EMPIRE_BRIDGE_DIR=str(bridge), PYTHONIOENCODING="utf-8")
+    out = open(work / "commander.out", "w", encoding="utf-8")
+    proc = subprocess.Popen([sys.executable, str(HERE / "commander.py"), "--backend", "rule", "--once", "--no-hotkeys",
+                             "--deploy-prompt", str(prompt)], env=env, cwd=str(HERE), stdout=out, stderr=subprocess.STDOUT)
+
+    def run(seconds: float):
+        t_end = g.SIM.t + seconds
+        while g.SIM.t < t_end:
+            g.SIM_step(0.25)
+            time.sleep(0.0125)
+
+    def state():
+        return json.loads((bridge / "state.json").read_text(encoding="utf-8"))
+
+    def unit(st, bid):
+        for al in st["alliances"]:
+            for u in al["units"]:
+                if u["id"] == bid:
+                    return u
+
+    results = {}
+    g.SIM_phase("Startup"); g.SIM_phase("Deployment")
+    run(5)
+    # erst Befehle schicken, wenn der Feldherr die Schlacht erkannt hat (beim Start loescht er alte Befehle)
+    t0 = time.monotonic()
+    while "Neue Schlacht erkannt" not in (work / "commander.out").read_text(encoding="utf-8") and time.monotonic() - t0 < 30:
+        run(1)
+    start = {u["id"]: (u["x"], u["z"]) for al in state()["alliances"] for u in al["units"]}
+    (bridge / "commands.txt").write_text("deploy\n", encoding="utf-8")
+    run(60)
+    st = state()
+    moved = sum(1 for al in st["alliances"] for u in al["units"]
+                if ((u["x"] - start[u["id"]][0]) ** 2 + (u["z"] - start[u["id"]][1]) ** 2) ** 0.5 > 5)
+    ctrl = sum(1 for al in st["alliances"] for u in al["units"] if u["controlled"])
+    results["A Aufstellung (Einheiten bewegt / uebernommen)"] = (moved >= 5 and ctrl == 9, f"{moved} bewegt, {ctrl}/9 uebernommen")
+
+    g.SIM_select_unit(1, 1, True)
+    run(3)
+    (bridge / "commands.txt").write_text("sel_player\n", encoding="utf-8")
+    run(5)
+    u = unit(state(), "1.1.1")
+    results["B Markierte -> Spieler"] = (u["controlled"] is False and u["manual"] is True, f"controlled={u['controlled']} manual={u['manual']}")
+
+    g.SIM_phase("Deployed")
+    run(20)
+    u = unit(state(), "1.1.1")
+    results["C bleibt bei Schlachtbeginn beim Spieler"] = (u["controlled"] is False, f"controlled={u['controlled']}")
+
+    (bridge / "commands.txt").write_text("sel_ai\n", encoding="utf-8")
+    run(5)
+    u = unit(state(), "1.1.1")
+    results["D Markierte -> KI"] = (u["controlled"] is True and u["manual"] is False, f"controlled={u['controlled']} manual={u['manual']}")
+
+    bad = [r for r in state()["order_results"] if not r["ok"]]
+    results["E keine Befehlsfehler"] = (not bad, f"{len(bad)} Fehler" + (f": {bad[:2]}" if bad else ""))
+
+    g.SIM_phase("Complete")
+    try:
+        proc.wait(timeout=20)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+    out.close()
+    print((work / "commander.out").read_text(encoding="utf-8"))
+    ok = True
+    for k, (passed, detail) in results.items():
+        ok &= passed
+        print(f"{'PASS' if passed else 'FAIL'}  {k}: {detail}")
+    print("ERGEBNIS:", "PASS" if ok else "FAIL")
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

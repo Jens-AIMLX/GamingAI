@@ -24,6 +24,8 @@ def _unit_line(w: World, u: Unit, foes: list[Unit], task: str | None = None) -> 
         s += ", LEAVING"
     if u.men == 0:
         s += ", DESTROYED"
+    if u.manual:
+        s += " | COMMANDED BY THE PLAYER - do not give it orders"
     if task:
         s += f" | {task}"
     if u.alive and foes:
@@ -92,4 +94,39 @@ def describe(w: World, alliance: int, *, previous: Plan | None, notes: list[str]
         lines.append("ORDER ERRORS (the game rejected these): " + "; ".join(errors[-5:]))
     if notes:
         lines.append("YOUR LAST NOTES: " + " | ".join(notes[-3:]))
+    return "\n".join(lines)
+
+
+DEPLOY_RADIUS_M = 150.0
+
+
+def describe_deployment(w: World, alliance: int, deploy_orders: str) -> str:
+    """Bericht fuer die Aufstellung (vor Schlachtbeginn). Die Grenzen des Aufstellungsbereichs liefert die
+    Spiel-API nicht; deshalb bleibt jede Einheit in der Naehe ihrer Startposition."""
+    mine = sorted(w.side(alliance, alive=False), key=lambda u: u.id)
+    foes = sorted(w.enemies(alliance, alive=False), key=lambda u: u.id)
+    cm, ce = centroid(mine), centroid(foes)
+    lines = [
+        "DEPLOYMENT PHASE - the battle has not started yet. Deploy your army: give every unit a 'move' task to "
+        "its starting position, in the shapes you want (lines, a second line, reserves, wings, artillery position). "
+        f"The deployment zone is limited and its edges are unknown: keep every target point within about "
+        f"{DEPLOY_RADIUS_M:.0f} m of the area your army occupies now, and do not move towards the enemy beyond your "
+        "army's current front. Use only move tasks (no attack, no withdraw). Face the enemy unless the orders say otherwise.",
+        f"You command alliance {alliance}.",
+    ]
+    if cm and ce:
+        lines.append(f"Your army centre ({cm[0]:.0f},{cm[1]:.0f}), enemy centre ({ce[0]:.0f},{ce[1]:.0f}): "
+                     f"{dist(cm, ce):.0f} m, the enemy lies {compass(bearing_to(cm, ce))} ({bearing_to(cm, ce):.0f} deg) of you.")
+    if mine:
+        xs, zs = [u.x for u in mine], [u.z for u in mine]
+        lines.append(f"Your units currently stand between x {min(xs):.0f}..{max(xs):.0f} and z {min(zs):.0f}..{max(zs):.0f}.")
+    if deploy_orders.strip():
+        lines.append("")
+        lines.append("DEPLOYMENT ORDERS FROM YOUR SOVEREIGN (follow them):")
+        lines.append(deploy_orders.strip())
+    lines.append("")
+    lines.append("YOUR UNITS:")
+    lines += ["  " + _unit_line(w, u, []) for u in mine]
+    lines.append("ENEMY UNITS (as far as visible):")
+    lines += ["  " + _unit_line(w, u, []) for u in foes]
     return "\n".join(lines)

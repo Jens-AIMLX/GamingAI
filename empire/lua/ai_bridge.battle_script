@@ -171,7 +171,8 @@ end
 -- Lagebild schreiben
 -- ------------------------------------------------------------
 local function unit_state(e)
-	local s = { id = e.id, type = e.type, controlled = e.controlled and true or false }
+	local s = { id = e.id, type = e.type, controlled = e.controlled and true or false,
+		selected = e.selected and true or false, manual = e.manual and true or false }
 	pcall(function()
 		local p = e.unit:position()
 		s.x, s.y, s.z = p:get_x(), p:get_y(), p:get_z()
@@ -250,8 +251,9 @@ end
 local function exec_order(o)
 	local e = AIB.byid[o.unit]
 	if not e then error("unbekannte Einheit " .. tostring(o.unit)) end
-	if o.cmd == "take" then take(e); return end
-	if o.cmd == "release" then release(e); return end
+	if o.cmd == "take" then take(e); e.manual = false; return end
+	-- release: Einheit geht an den Spieler und bleibt bei ihm (auch bei Schlachtbeginn), bis wieder "take" kommt
+	if o.cmd == "release" then release(e); e.manual = true; return end
 	if not ALLOWED[o.cmd] then error("Befehl nicht erlaubt: " .. tostring(o.cmd)) end
 	if not e.controlled then error("Einheit nicht unter Kontrolle der Bruecke") end
 	local args, n = {}, 0
@@ -298,8 +300,10 @@ local function apply_control()
 			AIB.controlled_alliances[a] = true
 			local n = 0
 			for _, e in ipairs(entry.units) do
-				local ok, err = pcall(take, e)
-				if ok then n = n + 1 else log("take_control " .. e.id .. " FEHLER: " .. tostring(err)) end
+				if not e.manual then
+					local ok, err = pcall(take, e)
+					if ok then n = n + 1 else log("take_control " .. e.id .. " FEHLER: " .. tostring(err)) end
+				end
 			end
 			log(string.format("Allianz %d uebernommen (%d Einheiten, Modus %s)", a, n, mode))
 		end
@@ -328,19 +332,23 @@ function AIB_Phase(event)
 	pcall(write_state)
 end
 
+-- Auswahl des Spielers: markierte Einheiten verfolgen (fuer die Hotkeys) und Spielerseite erkennen
 function AIB_Selected(unit, selected)
-	if not selected or AIB.player_source then return end
-	pcall(function()
+	local ok, err = pcall(function()
 		for a, entry in ipairs(AIB.alliances) do
 			for _, e in ipairs(entry.units) do
 				if e.unit == unit then
-					AIB.player, AIB.player_source = a, "auswahl"
-					log("Spieler-Allianz per Auswahl erkannt: " .. a)
+					e.selected = selected and true or false
+					if selected and not AIB.player_source then
+						AIB.player, AIB.player_source = a, "auswahl"
+						log("Spieler-Allianz per Auswahl erkannt: " .. a)
+					end
 					return
 				end
 			end
 		end
 	end)
+	if not ok then log("Auswahl-Handler FEHLER: " .. tostring(err)) end
 end
 
 function AIB_Command(event)
