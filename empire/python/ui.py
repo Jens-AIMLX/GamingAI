@@ -50,7 +50,7 @@ DEFAULT_HOTKEYS = {"deploy": "F9", "sel_ai": "F10", "sel_player": "F11"}
 
 DEFAULTS = {"model": next(iter(MODELS)), "effort": "low", "interval": 10, "close_interval": 5,
             "strategy": "standard", "strategy_drafts": {}, "orders_player": "", "orders_enemy": "", "deploy_prompt": "",
-            "hotkeys": dict(DEFAULT_HOTKEYS), "own_groups": False,
+            "hotkeys": dict(DEFAULT_HOTKEYS), "own_groups": False, "review_baselines": {},
             "geometry": "1040x1000"}
 
 
@@ -465,10 +465,12 @@ class App(tk.Tk):
         self._save_now()
 
     # ---------- Prompt pruefen & verbessern ----------
-    def _review(self, kind: str, widget: tk.Text, title: str) -> None:
+    def _review(self, kind: str, widget: tk.Text, title: str, full: bool = False) -> None:
         """Claude analysiert den Text (Teil 1) und schlaegt eine bessere Fassung vor (Teil 2, bearbeitbar).
-        'Übernehmen' setzt den (ggf. angepassten) Vorschlag ins Feld."""
+        'Übernehmen' setzt den (ggf. angepassten) Vorschlag ins Feld und merkt sich ihn als Grundlage: Zeilen, die
+        danach unveraendert bleiben, sind bei der naechsten Pruefung geschuetzt (full=True prueft alles neu)."""
         text = widget.get("1.0", "end").strip()
+        baseline = None if full else (self.s.get("review_baselines") or {}).get(kind)
         if not text:
             messagebox.showinfo(title, "Das Feld ist leer – es gibt nichts zu prüfen.")
             return
@@ -503,12 +505,19 @@ class App(tk.Tk):
                 return
             widget.delete("1.0", "end")
             widget.insert("1.0", new)
+            # Grundlage fuer das Diff-Management: diese Fassung gilt ab jetzt als geprueft
+            self.s.setdefault("review_baselines", {})[kind] = [l.rstrip() for l in new.splitlines()]
             self._save_now()
             self._append(f"{title}: Vorschlag übernommen (wirkt ab dem nächsten Plan).\n")
             win.destroy()
 
+        def again_full():
+            win.destroy()
+            self._review(kind, widget, title, full=True)
+
         take = ttk.Button(bar, text="Übernehmen", command=apply, state="disabled")
         take.pack(side="left", padx=4)
+        ttk.Button(bar, text="Alles neu prüfen", command=again_full).pack(side="left", padx=4)
         ttk.Button(bar, text="Schließen", command=win.destroy).pack(side="left")
         ana.insert("1.0", "Teil 1 – Analyse folgt …")
         ana.config(state="disabled")
@@ -522,16 +531,29 @@ class App(tk.Tk):
                 status.config(text="Prüfung fehlgeschlagen", foreground="#b00020")
                 ana.insert("1.0", err)
             else:
-                status.config(text=f"Fertig ({model}).", foreground="#1a7f37")
-                ana.insert("1.0", "Teil 1 – Analyse\n\n" + res.analysis.strip())
-                sug.insert("1.0", res.suggestion.strip())
+                scope = ("alle Zeilen geprüft" if full or baseline is None else
+                         f"{res.protected} Zeilen geschützt (unverändert seit der letzten Überarbeitung), "
+                         f"{res.open} neue/geänderte geprüft")
+                status.config(text=f"Fertig ({model}) – {scope}.", foreground="#1a7f37")
+                diff = []
+                for old, new in res.changes:
+                    if not old:
+                        diff.append(f"+ {new}")
+                    elif not new:
+                        diff.append(f"− entfernt: {old}")
+                    else:
+                        diff.append(f"~ {old}\n  → {new}")
+                ana.insert("1.0", "Teil 1 – Analyse\n\n" + res.analysis.strip()
+                           + "\n\nÄnderungen gegenüber deinem Text:\n"
+                           + ("\n".join(diff) if diff else "(keine – die geprüften Zeilen sind gut so)"))
+                sug.insert("1.0", res.merged_text)
                 take.config(state="normal")
             ana.config(state="disabled")
 
         def run():
             try:
-                from empire_general.prompt_eval import evaluate
-                res = evaluate(kind, text, api_key=key, model=model)
+                from empire_general.prompt_eval import review_lines
+                res = review_lines(kind, text, baseline, api_key=key, model=model)
                 self.calls.put(lambda: done(res, None))
             except Exception as e:  # Anzeige im Dialog
                 msg = str(e).replace(key, "<Schlüssel>")

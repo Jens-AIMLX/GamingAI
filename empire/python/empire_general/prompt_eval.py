@@ -1,13 +1,19 @@
 """Prompt-Eval: Claude analysiert einen Taktik-/Aufstellungs-/Strategie-Prompt und schlaegt eine bessere Fassung vor.
 
 Bewertet wird, ob der Feldherr den Text so ausfuehren KANN (Aufgaben, Reflexe, Grenzen der Script-API) und ob er
-eindeutig ist. Antwort in zwei Teilen: analysis (Befund) und suggestion (neue Fassung, Absicht des Spielers bleibt).
+eindeutig ist. Antwort in zwei Teilen: Analyse und ueberarbeitete Zeilen.
 
-    from empire_general.prompt_eval import evaluate
-    res = evaluate("orders_player", text, api_key=..., model="claude-sonnet-5-5")
-    res.analysis, res.suggestion
+Diff-Management: Zeilen, die seit der letzten uebernommenen Ueberarbeitung unveraendert sind ("geschuetzt"), werden
+nicht angefasst - das Modell sieht sie nur als Kontext und ueberarbeitet ausschliesslich neue/geaenderte Zeilen.
+Das Zusammensetzen (merge) passiert hier im Code, geschuetzte Zeilen koennen also gar nicht veraendert werden.
+
+    from empire_general.prompt_eval import review_lines
+    res = review_lines("orders_player", text, baseline_lines, api_key=..., model="claude-sonnet-5-5")
+    res.analysis, res.merged_text, res.changes
 """
 from __future__ import annotations
+
+from dataclasses import dataclass, field
 
 from pydantic import BaseModel, Field
 
@@ -18,54 +24,89 @@ KINDS = {
     "orders_enemy": "binding ORDERS for the ENEMY army (the opponent of the human player)",
     "strategy": "general STRATEGY ADVICE for both sides (only lines starting with '- ' reach the general; "
                 "it ranks below the binding orders)",
-    "deploy": "the DEPLOYMENT PROMPT: how the army is to be placed before the battle starts (only move tasks, "
-              "the deployment zone is limited and its edges are unknown; units should stay near their start area)",
+    "deploy": "the DEPLOYMENT PROMPT: how the army is to be placed before the battle starts. The general uses only "
+              "move tasks there; the system itself already keeps all target points within about 150 m of the area "
+              "the army occupies - the player does not need to write any distance limit",
 }
 
 
-class PromptReview(BaseModel):
-    analysis: str = Field(description="Part 1 - analysis in German: what works, what the general cannot execute "
-                                      "and why, ambiguities, contradictions, missing triggers or time limits. "
-                                      "Short paragraphs or bullet points, max. ~250 words")
-    suggestion: str = Field(description="Part 2 - the improved text in German, ready to paste: one instruction per "
-                                        "line, each starting with '- '. Keep the player's intent and priorities; "
-                                        "make every line executable with the general's tasks and reflexes; drop or "
-                                        "rephrase what cannot be ordered and say so in the analysis")
+class WireReview(BaseModel):
+    analysis: str = Field(description="Part 1 - analysis in German, plain text without Markdown: what works, what "
+                                      "the general cannot execute and why, ambiguities, contradictions (also with "
+                                      "the protected lines), missing triggers. Max. ~250 words")
+    revised: list[str] = Field(description="Exactly one entry per OPEN line, in the same order: the improved line "
+                                           "(starting with '- '), or the unchanged line if it is already good, or "
+                                           "an empty string to delete it")
+    added: list[str] = Field(description="New lines ('- ...') only if something the player clearly intends is "
+                                         "missing; usually []")
 
 
 EVAL_SYSTEM = """\
 You review prompts that a human player writes for an AI general in Total War: EMPIRE. The general receives the \
 prompt and plans every 5-15 seconds; a subordinate executes the plans with a fixed set of tasks and reflexes. \
-Your job: judge whether the general can carry the text out as the player intends, and propose a better version.
+Your job: judge whether the general can carry the text out as the player intends, and improve the OPEN lines.
 
 This is exactly what the general is told about its command (its own system prompt):
 -----
 {general}
 -----
 
-Review criteria:
+Rules for your revision:
+- You only revise the OPEN lines. PROTECTED lines were already reviewed and accepted by the player: never repeat, \
+rephrase or move them; they are shown only as context. If an open line contradicts a protected line, keep the \
+player's newer open line and point the conflict out in the analysis.
+- Keep the player's intent, style of play, priorities and all numbers they wrote. Never invent new restrictions, \
+limits or priorities the player did not state (no new distance limits, no "this rule overrides everything", no \
+extra conditions). Only make vague wording concrete where the player's meaning is clear.
 - Executability: every instruction must map onto the tasks (move, attack, halt, withdraw), shapes, waypoints, \
 reflexes (engage_within_m, keep_range_m, near/routed/arrived/after reflexes, fire_at_will, skirmish) or targets \
-(unit ids, roles like general, artillery, cavalry) the general has. Name instructions that cannot be ordered \
-(e.g. ammunition type, formation type) and replace them with the closest executable behaviour.
-- Clarity: concrete triggers instead of vague words ("when enemy infantry is within 120 m" instead of "when they \
-come close"), concrete time limits in battle time, clear priorities when instructions compete.
-- Consistency: contradictions between lines, and with the side the text is meant for.
-- Keep the player's intent, style of play and priorities. Do not invent a different strategy.
-Write both parts in German, as plain text without Markdown (no ** or #); use short headings followed by a colon \
-and lines starting with '- '. The suggestion is a list of lines starting with '- '.\
+(unit names/ids, roles like general, artillery, cavalry) the general has. If something cannot be ordered (e.g. \
+ammunition type, formation type), say so in the analysis and rephrase it to the closest executable behaviour.
+- If an open line is already good, return it unchanged.
+Write in German, as plain text without Markdown (no ** or #). Lines start with '- '.\
 """
 
 
-def evaluate(kind: str, text: str, *, api_key: str | None = None, model: str = "claude-sonnet-5-5",
-             effort: str = "medium") -> PromptReview:
+@dataclass
+class ReviewResult:
+    analysis: str
+    merged_text: str
+    changes: list[tuple[str, str]] = field(default_factory=list)   # (alt, neu); alt "" = neu hinzugefuegt, neu "" = entfernt
+    protected: int = 0
+    open: int = 0
+
+
+def split_lines(text: str) -> list[str]:
+    return [l.rstrip() for l in text.strip().splitlines()]
+
+
+def classify(text: str, baseline: list[str] | None) -> tuple[list[str], list[int], list[int]]:
+    """Zeilen des Textes -> (Zeilen, Indizes geschuetzt, Indizes offen). Geschuetzt = wortgleich in der Fassung,
+    die bei der letzten Ueberarbeitung uebernommen wurde. Leere Zeilen sind weder noch."""
+    lines = split_lines(text)
+    base = {l.strip() for l in (baseline or []) if l.strip()}
+    prot = [i for i, l in enumerate(lines) if l.strip() and l.strip() in base]
+    opn = [i for i, l in enumerate(lines) if l.strip() and l.strip() not in base]
+    return lines, prot, opn
+
+
+def review_lines(kind: str, text: str, baseline: list[str] | None, *, api_key: str | None = None,
+                 model: str = "claude-sonnet-5-5", effort: str = "medium") -> ReviewResult:
     import anthropic
 
     if kind not in KINDS:
         raise ValueError(f"unbekannte Art {kind!r}")
+    lines, prot, opn = classify(text, baseline)
+    if not opn:
+        return ReviewResult(analysis="Keine neuen oder geänderten Zeilen seit der letzten Überarbeitung – nichts zu prüfen.",
+                            merged_text="\n".join(lines), protected=len(prot), open=0)
+    protected_txt = "\n".join(lines[i] for i in prot) or "(none)"
+    open_txt = "\n".join(f"{n + 1}. {lines[i]}" for n, i in enumerate(opn))
+    user = (f"Type of prompt: {KINDS[kind]}.\n\n"
+            f"PROTECTED lines (already reviewed - do not change, context only):\n-----\n{protected_txt}\n-----\n\n"
+            f"OPEN lines to review ({len(opn)}; return exactly {len(opn)} entries in 'revised', same order):\n"
+            f"-----\n{open_txt}\n-----\n\nGive the analysis and the revised open lines.")
     client = anthropic.Anthropic(api_key=api_key, max_retries=2, timeout=120.0)
-    user = (f"Type of prompt: {KINDS[kind]}.\n\nThe player's text:\n-----\n{text.strip() or '(empty)'}\n-----\n\n"
-            "Give the analysis and the improved version.")
     try:
         resp = client.beta.messages.parse(
             model=model,
@@ -73,7 +114,7 @@ def evaluate(kind: str, text: str, *, api_key: str | None = None, model: str = "
             system=[{"type": "text", "text": EVAL_SYSTEM.format(general=SYSTEM_PROMPT),
                      "cache_control": {"type": "ephemeral"}}],
             messages=[{"role": "user", "content": user}],
-            output_format=PromptReview,
+            output_format=WireReview,
             output_config={"effort": effort},
             betas=["server-side-fallback-2026-07-01"],
             fallbacks="default",
@@ -88,6 +129,34 @@ def evaluate(kind: str, text: str, *, api_key: str | None = None, model: str = "
         raise RuntimeError("Keine Verbindung zur Claude-API") from e
     if resp.stop_reason == "refusal":
         raise RuntimeError("Das Modell hat die Prüfung abgelehnt")
-    if resp.parsed_output is None:
+    w = resp.parsed_output
+    if w is None:
         raise RuntimeError(f"keine gültige Antwort (stop_reason {resp.stop_reason})")
-    return resp.parsed_output
+    return merge(lines, opn, w.revised, w.added, w.analysis, len(prot))
+
+
+def merge(lines: list[str], opn: list[int], revised: list[str], added: list[str], analysis: str,
+          n_protected: int) -> ReviewResult:
+    """Ueberarbeitete Zeilen an die Stellen der offenen Zeilen setzen; geschuetzte und leere Zeilen bleiben, wie sie
+    sind. Liefert das Modell eine falsche Anzahl, bleiben die nicht zuordenbaren offenen Zeilen unveraendert."""
+    out = list(lines)
+    changes: list[tuple[str, str]] = []
+    note = ""
+    if len(revised) != len(opn):
+        note = (f"\n\nHinweis: Das Modell lieferte {len(revised)} statt {len(opn)} überarbeitete Zeilen – "
+                "nicht zuordenbare Zeilen bleiben unverändert.")
+    for n, i in enumerate(opn):
+        if n >= len(revised):
+            break
+        new = revised[n].rstrip()
+        if new.strip() != lines[i].strip():
+            changes.append((lines[i], new))
+            out[i] = new
+    for a in added:
+        if a.strip():
+            changes.append(("", a.rstrip()))
+            out.append(a.rstrip())
+    # vom Modell geloeschte offene Zeilen (leerer String) entfernen, echte Leerzeilen der Vorlage behalten
+    final = [x for k, x in enumerate(out) if not (k in opn and x.strip() == "")]
+    return ReviewResult(analysis=analysis.strip() + note, merged_text="\n".join(final).strip(),
+                        changes=changes, protected=n_protected, open=len(opn))
