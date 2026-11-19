@@ -54,7 +54,8 @@ def main() -> int:
     env = dict(os.environ, EMPIRE_BRIDGE_DIR=str(bridge), PYTHONIOENCODING="utf-8")
     out = open(work / "commander.out", "w", encoding="utf-8")
     proc = subprocess.Popen([sys.executable, str(HERE / "commander.py"), "--backend", "rule", "--once", "--no-hotkeys",
-                             "--deploy-prompt", str(prompt)], env=env, cwd=str(HERE), stdout=out, stderr=subprocess.STDOUT)
+                             "--deploy-prompt", str(prompt), "--roster", str(work / "roster.json")],
+                            env=env, cwd=str(HERE), stdout=out, stderr=subprocess.STDOUT)
 
     def run(seconds: float):
         t_end = g.SIM.t + seconds
@@ -117,6 +118,34 @@ def main() -> int:
     (bridge / "commands.txt").write_text("sel_ai\n", encoding="utf-8")
     u = wait_unit("1.1.1", lambda u: u["controlled"])
     results["D Markierte -> KI"] = (u["controlled"] is True and u["manual"] is False, f"controlled={u['controlled']} manual={u['manual']}")
+
+    # Uebergabe per Einheitenliste (ohne Auswahl im Spiel) und zurueck
+    (bridge / "commands.txt").write_text("give_player 1.1.2,1.1.3\n", encoding="utf-8")
+    u = wait_unit("1.1.3", lambda u: u["manual"])
+    u2 = unit(state(), "1.1.2")
+    results["H Liste -> Spieler (2 Einheiten)"] = (u["manual"] and u2["manual"], f"1.1.2 manual={u2['manual']} 1.1.3 manual={u['manual']}")
+    (bridge / "commands.txt").write_text("give_ai 1.1.2,1.1.3\n", encoding="utf-8")
+    u = wait_unit("1.1.3", lambda u: u["controlled"])
+    results["I Liste -> KI"] = (u["controlled"] and not u["manual"], f"controlled={u['controlled']}")
+
+    # Einheitenliste fuer das Steuerpult
+    try:
+        roster = json.loads((work / "roster.json").read_text(encoding="utf-8"))
+        names = [r["name"] for r in roster["units"]]
+    except (FileNotFoundError, json.JSONDecodeError):
+        names = []
+    results["J Einheitenliste mit Namen"] = ("Kavallerie 1" in names and "gegn. Artillerie 1" in names, ", ".join(names))
+
+    # Chat-Befehl: landet als Sofortbefehl im naechsten Lagebericht
+    (bridge / "commands.txt").write_text("order player Kavallerie 1 greift gegn. Artillerie 1 an\n", encoding="utf-8")
+    t_end = time.monotonic() + 20
+    found = False
+    while time.monotonic() < t_end and not found:
+        run(1)
+        logs = sorted((HERE / "logs").glob("battle_*.jsonl"), key=lambda p: p.stat().st_mtime)
+        txt = logs[-1].read_text(encoding="utf-8") if logs else ""
+        found = "IMMEDIATE ORDERS" in txt and "Kavallerie 1 greift gegn. Artillerie 1 an" in txt
+    results["K Chat-Befehl im Lagebericht"] = (found, "gefunden" if found else "nicht im Bericht")
 
     # erwartet: die Uebernahme der gruppierten Einheit wird abgelehnt - das ist kein Fehler
     bad = [r for r in state()["order_results"] if not r["ok"] and "another group" not in (r.get("err") or "")]

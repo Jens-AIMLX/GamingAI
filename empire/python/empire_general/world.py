@@ -14,6 +14,11 @@ from .units import role_of
 
 HISTORY_S = 12.0
 
+ROLE_NAMES = {"general": "General", "line_infantry": "Infanterie", "light_infantry": "Leichte Infanterie",
+              "grenadiers": "Grenadiere", "melee_infantry": "Nahkampf-Infanterie", "heavy_cavalry": "Kavallerie",
+              "light_cavalry": "Kavallerie", "missile_cavalry": "Kavallerie", "artillery": "Artillerie",
+              "infantry": "Infanterie", "unit": "Einheit"}
+
 
 @dataclass
 class Unit:
@@ -35,6 +40,7 @@ class Unit:
     selected: bool = False  # im Spiel markiert
     manual: bool = False    # per Hotkey an den Spieler gegeben
     grouped: bool = False   # im Spiel gruppiert -> nicht uebernehmbar, bis die Gruppe aufgeloest ist
+    name: str = ""          # lesbarer Name fuer Spieler und Modell, z. B. 'Kavallerie 3' (fest fuer die Schlacht)
     vx: float = 0.0         # m/s
     vz: float = 0.0
 
@@ -85,6 +91,7 @@ class World:
     order_results: list[dict] = field(default_factory=list)
     _ids: dict[str, int] = field(default_factory=dict)
     _hist: dict[str, deque] = field(default_factory=dict)
+    _names: dict[str, str] = field(default_factory=dict)
 
     def update(self, st: dict) -> None:
         self.time = float(st.get("game_time") or 0.0)
@@ -122,8 +129,40 @@ class World:
                     routing=bool(u.get("routing")), leaving=bool(u.get("leaving")), missile_range=rng,
                     controlled=bool(u.get("controlled")), selected=bool(u.get("selected")),
                     manual=bool(u.get("manual")), grouped=bool(u.get("grouped")), vx=vx, vz=vz)
+                unit.name = self._name_for(bid, a, unit.role)
                 self.units[uid] = unit
                 self.by_bid[bid] = unit
+
+    def _name_for(self, bid: str, alliance: int, role: str) -> str:
+        """Lesbarer, fuer die Schlacht fester Name: Gattung + laufende Nummer je Allianz (in Reihenfolge der
+        Einheitenkarten). Gegner bekommen 'gegn.' davor - dieselben Namen sehen Spieler und Modell."""
+        if bid not in self._names:
+            base = ROLE_NAMES.get(role, "Einheit")
+            n = sum(1 for k, v in self._names.items() if k.split(".")[0] == bid.split(".")[0]
+                    and v.rsplit(" ", 1)[0] == base) + 1
+            self._names[bid] = f"{base} {n}"
+        prefix = "" if alliance == (self.player_alliance or 1) else "gegn. "   # erst beim Anzeigen bestimmen
+        return prefix + self._names[bid]
+
+    def by_name(self, name: str) -> Unit | None:
+        n = name.strip().lower()
+        return next((u for u in self.units.values() if u.name.lower() == n), None)
+
+    def placement(self, u: Unit) -> str:
+        """Lage der Einheit in ihrer Armee aus Sicht der Armee (Blick zum Feind): Fluegel und vorn/hinten."""
+        own = [o for o in self.side(u.alliance) if o.id != u.id] + [u]
+        foes = self.enemies(u.alliance)
+        c, ce = centroid(own), centroid(foes)
+        if not c or not ce:
+            return ""
+        face = bearing_to(c, ce)
+        rx, rz = math.cos(math.radians(face)), -math.sin(math.radians(face))
+        fx, fz = math.sin(math.radians(face)), math.cos(math.radians(face))
+        lat = (u.x - c[0]) * rx + (u.z - c[1]) * rz
+        dep = (u.x - c[0]) * fx + (u.z - c[1]) * fz
+        side = "rechts" if lat > 40 else ("links" if lat < -40 else "Mitte")
+        depth = "vorn" if dep > 30 else ("hinten" if dep < -30 else "")
+        return f"{side} {depth}".strip()
 
     # ---------- Sichten ----------
     def wanted_alliances(self) -> list[int]:

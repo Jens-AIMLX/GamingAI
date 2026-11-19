@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import queue
 import sys
 import threading
@@ -40,7 +41,9 @@ from empire_general.plan import Plan
 from empire_general.world import World, centroid, dist
 
 HERE = Path(__file__).resolve().parent
-COMMANDS = ("deploy", "sel_ai", "sel_player")
+COMMANDS = ("deploy", "sel_ai", "sel_player",
+            "give_ai", "give_player",   # give_ai 1.1.3,1.1.4  - Einheiten per Liste uebergeben (ohne Auswahl im Spiel)
+            "order", "order_clear")     # order player|enemy <Text> - Sofortbefehl aus dem Chat; order_clear player|enemy
 DEFAULT_HOTKEYS = "deploy=F9,sel_ai=F10,sel_player=F11"
 _VK = {**{f"F{i}": 0x6F + i for i in range(1, 25)}, **{chr(c): c for c in range(ord("A"), ord("Z") + 1)},
        **{str(d): 0x30 + d for d in range(10)}, **{f"NUM{d}": 0x60 + d for d in range(10)},
@@ -75,27 +78,67 @@ def say(msg: str) -> None:
     print(msg, flush=True)
 
 
-# ---------------- Hotkeys (Windows RegisterHotKey, ohne Zusatzpaket) ----------------
+# ---------------- Hotkeys (Low-Level-Tastatur-Hook, ohne Zusatzpaket) ----------------
+# RegisterHotKey kommt im Vollbild nicht an: Empire holt sich die Tastatur per DirectInput. Ein WH_KEYBOARD_LL-Hook
+# sieht die Tasten vorher. Er laesst sie unveraendert ans Spiel weiter (nichts wird verschluckt).
 def hotkey_thread(q: queue.Queue, hotkeys: dict[str, tuple[str, int, int]]) -> None:
     try:
         import ctypes
         from ctypes import wintypes
     except ImportError:
         return
-    user32 = ctypes.windll.user32
-    MOD_NOREPEAT, WM_HOTKEY = 0x4000, 0x0312
-    ids = {}
-    for i, (cmd, (label, mods, vk)) in enumerate(hotkeys.items(), start=1):
-        if user32.RegisterHotKey(None, i, mods | MOD_NOREPEAT, vk):
-            ids[i] = cmd
-        else:
-            say(f"WARNUNG: Hotkey {label} konnte nicht registriert werden (von einem anderen Programm belegt?)")
-    if ids:
-        say("Hotkeys aktiv: " + ", ".join(f"{hotkeys[c][0]} = {c}" for c in ids.values()))
+    user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
+    WH_KEYBOARD_LL, WM_KEYDOWN, WM_SYSKEYDOWN, WM_KEYUP, WM_SYSKEYUP = 13, 0x100, 0x104, 0x101, 0x105
+    VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN = 0x10, 0x11, 0x12, 0x5B, 0x5C
+    LRESULT = ctypes.c_ssize_t
+
+    class KBDLLHOOKSTRUCT(ctypes.Structure):
+        _fields_ = [("vkCode", wintypes.DWORD), ("scanCode", wintypes.DWORD), ("flags", wintypes.DWORD),
+                    ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+    HOOKPROC = ctypes.WINFUNCTYPE(LRESULT, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+    user32.SetWindowsHookExW.argtypes = [ctypes.c_int, HOOKPROC, wintypes.HINSTANCE, wintypes.DWORD]
+    user32.SetWindowsHookExW.restype = wintypes.HHOOK
+    user32.CallNextHookEx.argtypes = [wintypes.HHOOK, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM]
+    user32.CallNextHookEx.restype = LRESULT
+    user32.GetAsyncKeyState.restype = ctypes.c_short
+    kernel32.GetModuleHandleW.restype = wintypes.HMODULE
+
+    by_vk: dict[int, list[tuple[int, str]]] = {}
+    for cmd, (label, mods, vk) in hotkeys.items():
+        by_vk.setdefault(vk, []).append((mods, cmd))
+    down: set[int] = set()
+
+    def mods_now() -> int:
+        pressed = lambda vk: bool(user32.GetAsyncKeyState(vk) & 0x8000)
+        return ((0x2 if pressed(VK_CONTROL) else 0) | (0x1 if pressed(VK_MENU) else 0)
+                | (0x4 if pressed(VK_SHIFT) else 0) | (0x8 if pressed(VK_LWIN) or pressed(VK_RWIN) else 0))
+
+    def proc(n_code, w_param, l_param):
+        if n_code == 0:
+            kb = ctypes.cast(l_param, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
+            vk = kb.vkCode
+            if w_param in (WM_KEYDOWN, WM_SYSKEYDOWN):
+                if vk in by_vk and vk not in down:          # nur beim ersten Druck, nicht bei Tastenwiederholung
+                    m = mods_now()
+                    for mods, cmd in by_vk[vk]:
+                        if m == mods:
+                            q.put(("hotkey", cmd))
+                down.add(vk)
+            elif w_param in (WM_KEYUP, WM_SYSKEYUP):
+                down.discard(vk)
+        return user32.CallNextHookEx(None, n_code, w_param, l_param)
+
+    cb = HOOKPROC(proc)   # Referenz halten, sonst raeumt Python den Rueckruf weg
+    hook = user32.SetWindowsHookExW(WH_KEYBOARD_LL, cb, kernel32.GetModuleHandleW(None), 0)
+    if not hook:
+        say(f"WARNUNG: Tastatur-Hook konnte nicht gesetzt werden (Fehler {kernel32.GetLastError()}) - Hotkeys aus")
+        return
+    say("Hotkeys aktiv (Tastatur-Hook): " + ", ".join(f"{label} = {cmd}" for cmd, (label, _, _) in hotkeys.items()))
     msg = wintypes.MSG()
-    while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
-        if msg.message == WM_HOTKEY and msg.wParam in ids:
-            q.put(("hotkey", ids[msg.wParam]))
+    while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:   # Nachrichtenschleife haelt den Hook am Leben
+        user32.TranslateMessage(ctypes.byref(msg))
+        user32.DispatchMessageW(ctypes.byref(msg))
 
 
 def read_command_file(path: Path) -> list[str]:
@@ -109,7 +152,34 @@ def read_command_file(path: Path) -> list[str]:
         lines = [l.strip() for l in tmp.read_text(encoding="utf-8").splitlines()]
     finally:
         tmp.unlink(missing_ok=True)
-    return [l for l in lines if l in COMMANDS]
+    return [l for l in lines if l.split(" ", 1)[0] in COMMANDS]
+
+
+def write_roster(path: Path, w: World, sides: dict) -> None:
+    """Einheitenliste fuer das Steuerpult: Name, Typ, Mannstaerke, Lage, wer fuehrt (atomar geschrieben)."""
+    units = []
+    for u in sorted(w.units.values(), key=lambda u: u.id):
+        if u.manual:
+            lead = "Spieler (übergeben)"
+        elif u.grouped:
+            lead = "Spieler (Gruppe)"
+        elif u.controlled:
+            lead = "KI"
+        else:
+            lead = "Spieler"
+        units.append({"bid": u.bid, "id": u.id, "name": u.name, "type": u.type, "role": u.role, "alliance": u.alliance,
+                      "men": u.men, "men_start": u.men_start, "lead": lead, "alive": u.alive,
+                      "status": "flieht" if u.routing else ("vernichtet" if u.men == 0 else ""),
+                      "placement": w.placement(u) if u.alive else ""})
+    data = {"time": w.time, "phase": w.phase, "player_alliance": w.player_alliance or 1, "units": units,
+            "orders": {str(a): [t for _, t in s.immediate] for a, s in sides.items()}}
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        pass   # Steuerpult liest gerade - naechste Sekunde wieder
 
 
 class Side:
@@ -137,6 +207,8 @@ class Side:
         self.last_men: tuple[int, int] | None = None
         self.last_pos: dict[int, tuple[float, float]] = {}
         self.plans = 0
+        self.immediate: list[tuple[float, str]] = []   # Sofortbefehle aus dem Chat: (Spielzeit, Text)
+        self.ack_since: float | None = None             # naechster Plan nach diesem Zeitpunkt bestaetigt den Befehl
 
     def changed(self, w: World) -> bool:
         if self.last_men is None:
@@ -160,6 +232,9 @@ class Side:
                     self.ready_deploy = plan
                 self.log({"type": kind, "alliance": self.alliance, "t": t_game, "secs": round(time.monotonic() - t0, 1),
                           "usage": getattr(self.general, "last_usage", None), "plan": plan.model_dump(exclude_none=True)})
+                if kind == "plan" and self.ack_since is not None and t_game >= self.ack_since:
+                    self.ack_since = None
+                    self.log({"type": "info", "t": t_game, "text": f"Feldherr Allianz {self.alliance} zum Befehl: {plan.intent}"})
             except Exception as e:  # Planung darf die Schlacht nie stoppen: Executor macht mit dem alten Plan weiter
                 self.error = str(e)
                 self.log({"type": "error", "alliance": self.alliance, "t": t_game, "error": str(e)})
@@ -175,7 +250,7 @@ class Side:
             losses = (self.last_men[0] - men[0], self.last_men[1] - men[1])
         report = describe(w, self.alliance, previous=self.ex.plan, notes=self.notes, tasks=self.ex.tasks(w),
                           reflex_status=self.ex.reflex_status(), losses=losses,
-                          errors=self.ex.errors[-5:] + self.ex.plan_warnings)
+                          errors=self.ex.errors[-5:] + self.ex.plan_warnings, immediate=self.immediate)
         self.last_men = men
         self.last_pos = {u.id: u.pos for u in w.units.values()}
         self.last_plan_t = w.time
@@ -204,6 +279,8 @@ def main() -> int:
     ap.add_argument("--orders-enemy", default=None, help="Datei mit verbindlichen Befehlen fuer die Gegnerarmee")
     ap.add_argument("--deploy-prompt", default=None, help="Datei mit dem Aufstellungsprompt (wird bei jedem Strg+Alt+A neu gelesen)")
     ap.add_argument("--no-hotkeys", action="store_true", help="keine globalen Hotkeys registrieren")
+    ap.add_argument("--roster", default=str(HERE / "runtime" / "roster.json"),
+                    help="Einheitenliste fuer das Steuerpult (wird jede Sekunde geschrieben)")
     ap.add_argument("--hotkeys", default=DEFAULT_HOTKEYS, help=f"z. B. '{DEFAULT_HOTKEYS}' oder 'deploy=Strg+Shift+F9,...'")
     args = ap.parse_args()
 
@@ -273,11 +350,46 @@ def main() -> int:
             say(f"Uebernehme Allianz {a} ({len(w.side(a))} Einheiten).")
         return sides[a]
 
-    def handle(cmd: str, source: str) -> list[Order]:
+    def handle(line: str, source: str) -> list[Order]:
         out: list[Order] = []
+        cmd, _, arg = line.partition(" ")
+        arg = arg.strip()
         if w is None or battle_over:
             say(f"{cmd} ({source}): keine laufende Schlacht")
             return out
+        if cmd in ("order", "order_clear"):
+            target, _, text = arg.partition(" ")
+            player = w.player_alliance or 1
+            others = sorted({u.alliance for u in w.units.values()} - {player})
+            a = player if target != "enemy" else (others[0] if others else None)
+            label = "Spielerarmee" if target != "enemy" else "Gegnerarmee"
+            if a is None or (a not in w.wanted_alliances() and a not in sides):
+                say(f"Befehl an die {label}: diese Seite wird nicht von der KI gefuehrt (Modus in 'KI fuehrt' pruefen)")
+                return out
+            s = side_for(a)
+            if cmd == "order_clear":
+                s.immediate.clear()
+                s.force_plan = True
+                log({"type": "info", "t": w.time, "text": f"Sofortbefehle an die {label} (Allianz {a}) aufgehoben"})
+                return out
+            if not text.strip():
+                return out
+            s.immediate = (s.immediate + [(w.time, text.strip())])[-5:]
+            s.force_plan = True
+            s.ack_since = w.time
+            log({"type": "order", "alliance": a, "t": w.time, "text": text.strip()})
+            say(f"[{w.time:6.0f}s] Befehl an die {label} (Allianz {a}): {text.strip()}"
+                + ("" if w.phase == "Deployed" else " - wird mit dem ersten Plan nach Schlachtbeginn umgesetzt"))
+            return out
+        if cmd in ("give_ai", "give_player"):
+            units = [w.by_bid[b] for b in arg.replace(",", " ").split() if b in w.by_bid]
+            if not units:
+                say(f"{cmd}: keine bekannte Einheit angegeben")
+                return out
+            cmd = "sel_ai" if cmd == "give_ai" else "sel_player"
+            source = "Liste"
+        else:
+            units = None
         if cmd == "deploy":
             alls = w.wanted_alliances()
             if not alls:
@@ -295,7 +407,7 @@ def main() -> int:
             log({"type": "info", "t": w.time, "text": f"Aufstellung angefordert ({source}) fuer Allianz {', '.join(map(str, alls))}"
                                                    + (f", Aufstellungsprompt {len(text)} Zeichen" if text.strip() else ", ohne Aufstellungsprompt")})
         elif cmd in ("sel_ai", "sel_player"):
-            sel = w.selected()
+            sel = units if units is not None else w.selected()
             if not sel:
                 say(f"{'Markierte -> KI' if cmd == 'sel_ai' else 'Markierte -> Spieler'}: keine Einheit markiert")
                 return out
@@ -305,27 +417,29 @@ def main() -> int:
                     side_for(u.alliance).force_plan = True
                 elif u.alliance in sides:
                     sides[u.alliance].force_plan = True
-            ids = ", ".join(f"#{u.id}" for u in sel)
+            ids = ", ".join(u.name or f"#{u.id}" for u in sel)
             log({"type": "info", "t": w.time,
                  "text": f"{'An die KI uebergeben' if cmd == 'sel_ai' else 'An den Spieler uebergeben'} ({source}): {ids}"})
         return out
 
+    # Befehle aus Hotkeys/Liste werden gesammelt und GENAU EINMAL pro Bruecken-Takt mitgeschickt: orders.lua wird bei
+    # jedem Senden ersetzt, und das Spiel liest sie nur einmal pro Takt - zwei Sendungen in einem Takt verlieren die erste.
+    carry: list[Order] = []
+    released_at: dict[str, float] = {}
     while True:
         # Befehle aus Hotkeys und commands.txt
-        pending: list[Order] = []
         cmds = [(c, "Datei") for c in read_command_file(cmd_file)]
         while not q.empty():
             _, c = q.get_nowait()
             cmds.append((c, "Hotkey"))
         for c, src in cmds:
-            pending += handle(c, src)
+            carry += handle(c, src)
 
         st = br.read_state()
         if not st or st.get("seq") == last_seq:
-            if pending:
-                br.send(pending)
             time.sleep(0.1)
             continue
+        pending, carry = carry, []
         new_battle = w is None or st["seq"] < last_seq or st["game_time"] < last_time - 2
         last_seq, last_time = st["seq"], st["game_time"]
         if new_battle:
@@ -357,7 +471,7 @@ def main() -> int:
         if w.phase == "Deployed":
             for a in w.controlled_alliances:
                 side_for(a)
-        orders = pending
+        orders = list(pending)   # Kopie: orders += ... darf pending nicht veraendern
         for a, s in sides.items():
             mine = w.side(a, alive=False)
             s.ex.note_results(w.order_results, {u.bid for u in mine})
@@ -419,6 +533,17 @@ def main() -> int:
                 first = s.ex.plan is None and w.time - s.last_plan_t >= 3   # nach Fehler nicht sekuendlich wiederholen
                 if s.force_plan or first or (due and (s.changed(w) or w.time - s.last_plan_t >= 3 * interval)):
                     s.start_plan(w)
+        write_roster(Path(args.roster), w, sides)
+        # gerade an den Spieler freigegebene Einheiten bekommen 3 s Spielzeit lang keine Executor-Befehle mehr
+        # (das Lagebild zeigt sie noch ein bis zwei Takte lang als gesteuert)
+        for o in pending:
+            if o.cmd == "release":
+                released_at[o.unit] = w.time
+            elif o.cmd == "take":
+                released_at.pop(o.unit, None)
+        blocked = {b for b, t in released_at.items() if w.time - t < 3}
+        if blocked:
+            orders = pending + [o for o in orders[len(pending):] if o.unit not in blocked]
         if orders:
             br.send(orders)
     if logf:

@@ -11,7 +11,7 @@ from .world import Unit, World, bearing_to, centroid, compass, dist
 
 
 def _unit_line(w: World, u: Unit, foes: list[Unit], task: str | None = None) -> str:
-    s = f"#{u.id} {u.role} ({u.type}) men {u.men}/{u.men_start} at ({u.x:.0f},{u.z:.0f}) facing {u.bearing:.0f}"
+    s = f"#{u.id} '{u.name}' {u.role} ({u.type}) men {u.men}/{u.men_start} at ({u.x:.0f},{u.z:.0f}) facing {u.bearing:.0f}"
     if u.speed >= 0.5:
         s += f", moving {compass(bearing_to((0, 0), (u.vx, u.vz)))} {u.speed:.1f} m/s"
     else:
@@ -66,12 +66,23 @@ def _predictions(w: World, mine: list[Unit], foes: list[Unit]) -> list[str]:
 
 
 def describe(w: World, alliance: int, *, previous: Plan | None, notes: list[str], tasks: dict[int, str],
-             reflex_status: list[str], losses: tuple[int, int] | None, errors: list[str]) -> str:
+             reflex_status: list[str], losses: tuple[int, int] | None, errors: list[str],
+             immediate: list[tuple[float, str]] | None = None) -> str:
     mine = sorted(w.side(alliance, alive=False), key=lambda u: u.id)
     foes = sorted(w.enemies(alliance, alive=False), key=lambda u: u.id)
     mine_alive = [u for u in mine if u.alive]
     foes_alive = [u for u in foes if u.alive]
     lines = [f"TIME {w.time:.0f} s, phase {w.phase}. You command alliance {alliance}."]
+    if immediate:
+        lines.append("")
+        lines.append("IMMEDIATE ORDERS FROM YOUR SOVEREIGN (given during the battle - top priority, carry them out NOW "
+                     "and keep following them until done or replaced; units are named as in the unit list, e.g. "
+                     "'Kavallerie 3', enemy units with 'gegn.'; descriptions like 'the enemy guns on the left' refer to "
+                     "the positions in the lists below, left/right as seen by your army facing the enemy). Start your "
+                     "intent with a one-line acknowledgement in German of how you carry out the newest order:")
+        for t0, text in immediate:
+            lines.append(f"  - at {t0:.0f} s ({w.time - t0:.0f} s ago): {text}")
+        lines.append("")
     cm, ce = centroid(mine_alive), centroid(foes_alive)
     if cm and ce:
         lines.append(f"Your army centre ({cm[0]:.0f},{cm[1]:.0f}), enemy centre ({ce[0]:.0f},{ce[1]:.0f}): "

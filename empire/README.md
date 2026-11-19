@@ -79,6 +79,18 @@ Doppelklick auf `start_ui.bat` (oder `python python\ui.py`):
 In der Aufstellung **eine eigene Einheit anklicken** – so erkennt die Brücke deine Seite (sonst gilt Allianz 1
 als deine). Ab Schlachtbeginn übernimmt der Feldherr.
 
+### Einheiten und Befehle während der Schlacht
+
+- **Registerkarte „Einheiten“:** alle Einheiten mit festem Namen (z. B. „Kavallerie 3“, beim Gegner
+  „gegn. Artillerie 1“), Typ, Mannstärke (= Zahl unter der Einheitenkarte im Spiel), Lage (links/Mitte/rechts,
+  vorn/hinten aus Sicht der Armee) und wer sie führt. Mit **„Markierte → Spieler“ / „→ KI“** gibst du Einheiten ab
+  oder zurück – ohne sie im Spiel anwählen zu müssen (übernommene Einheiten sperrt das Spiel für die Auswahl).
+- **Chat „Befehl an …“** (unten im Steuerpult, Enter oder „Senden“): operative Befehle in freier Sprache, z. B.
+  „Kavallerie 3 greift gegn. Artillerie 1 an“ oder „Frontartillerie zurückziehen“. Der Befehl löst sofort einen neuen
+  Plan aus, hat Vorrang und bleibt aktiv, bis er erledigt ist oder du **„Befehle aufheben“** drückst. Der Feldherr
+  bestätigt im Protokoll („Feldherr … zum Befehl: Verstanden: …“). Im Vollbild: Steuerpult auf einem zweiten
+  Bildschirm oder Empire im Fenstermodus.
+
 ### Hotkeys (solange der Feldherr läuft, auch wenn Empire im Vordergrund ist)
 
 | Hotkey | Button | Wirkung |
@@ -87,7 +99,8 @@ als deine). Ab Schlachtbeginn übernimmt der Feldherr.
 | **F10** | Markierte → KI | Die im Spiel markierten Einheiten werden übernommen und von der KI eingeplant. |
 | **F11** | Markierte → Spieler | Die markierten Einheiten werden freigegeben; die KI plant sie nicht mehr ein, auch nicht bei Schlachtbeginn, bis sie mit F10 zurückgegeben werden. |
 
-Die Tasten sind im Steuerpult einstellbar (Feld neben jedem Button, z. B. `F9`, `Pause`, `Num5`, `Strg+Shift+F9`).
+Die Hotkeys laufen über einen Low-Level-Tastatur-Hook (Empire holt sich die Tastatur per DirectInput,
+normale Windows-Hotkeys kommen im Vollbild nicht an). Die Tasten sind im Steuerpult einstellbar (Feld neben jedem Button, z. B. `F9`, `Pause`, `Num5`, `Strg+Shift+F9`).
 **Achtung:** Empire liest die Tastatur selbst (DirectInput) und sieht jede Taste ebenfalls – Kombinationen wie
 Strg+Alt+A kommen im Spiel als Strg+A („alle auswählen“) an. Deshalb Tasten wählen, die Empire nicht belegt.
 Die Buttons schreiben in `<Spiel>\ai_bridge\commands.txt`; der Feldherr liest die Datei laufend.

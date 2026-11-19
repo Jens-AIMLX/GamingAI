@@ -259,9 +259,39 @@ class App(tk.Tk):
         self.deploy_text = self._text(f, 10, self.s.get("deploy_prompt", ""))
         self.deploy_text.grid(row=1, column=0, sticky="ew", pady=4)
 
+        # Einheiten: Liste mit Uebergabe KI <-> Spieler (ohne Auswahl im Spiel - uebernommene Einheiten sperrt das Spiel)
+        tab_units = ttk.Frame(self.nb, padding=6)
+        tab_units.columnconfigure(0, weight=1)
+        ub = ttk.Frame(tab_units)
+        ub.grid(row=0, column=0, sticky="ew")
+        self.units_side = tk.StringVar(value="player")
+        ttk.Radiobutton(ub, text="Meine Armee", value="player", variable=self.units_side,
+                        command=self._refresh_units).pack(side="left")
+        ttk.Radiobutton(ub, text="Gegner", value="enemy", variable=self.units_side,
+                        command=self._refresh_units).pack(side="left", padx=(8, 16))
+        ttk.Button(ub, text="Markierte → Spieler", command=lambda: self._give("give_player")).pack(side="left", padx=2)
+        ttk.Button(ub, text="Markierte → KI", command=lambda: self._give("give_ai")).pack(side="left", padx=2)
+        self.units_info = ttk.Label(ub, text="Liste erscheint, sobald der Feldherr eine Schlacht sieht.", foreground="#777")
+        self.units_info.pack(side="left", padx=12)
+        cols = ("name", "type", "men", "lage", "fuehrung", "status")
+        self.units_tree = ttk.Treeview(tab_units, columns=cols, show="headings", height=9, selectmode="extended")
+        for c, label, wd in (("name", "Name", 150), ("type", "Typ (Spieldaten)", 230), ("men", "Mann", 70),
+                             ("lage", "Lage", 110), ("fuehrung", "Führung", 150), ("status", "Status", 90)):
+            self.units_tree.heading(c, text=label)
+            self.units_tree.column(c, width=wd, anchor="w")
+        self.units_tree.grid(row=1, column=0, sticky="nsew", pady=(6, 0))
+        usb = ttk.Scrollbar(tab_units, command=self.units_tree.yview)
+        usb.grid(row=1, column=1, sticky="ns", pady=(6, 0))
+        self.units_tree["yscrollcommand"] = usb.set
+        ttk.Label(tab_units, text="Mehrere Einheiten mit Strg/Umschalt auswählen. „Mann“ entspricht der Zahl unter der "
+                                  "Einheitenkarte im Spiel. Die Namen benutzt auch der Feldherr – im Chat z. B. "
+                                  "„Kavallerie 3 greift gegn. Artillerie 1 an“.", foreground="#777").grid(
+            row=2, column=0, sticky="w", pady=(4, 0))
+
         self.nb.add(tab_orders, text="  Befehle (verbindlich)  ")
         self.nb.add(tab_strategy, text="  Strategie (Ratschläge)  ")
         self.nb.add(tab_deploy, text="  Aufstellung (F9)  ")
+        self.nb.add(tab_units, text="  Einheiten  ")
         ttk.Label(tab_deploy, text="Wird bei jedem „Aufstellung übernehmen“ neu gelesen.", foreground="#777").grid(
             row=2, column=0, sticky="w")
 
@@ -292,9 +322,25 @@ class App(tk.Tk):
             v.trace_add("write", lambda *a: self._schedule_save())
             self.hotkey_vars[cmd] = v
             self.action_btns.append(b)
+        # Chat: Sofortbefehle an den Feldherrn waehrend der Schlacht
+        chat = ttk.Frame(f)
+        chat.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        chat.columnconfigure(2, weight=1)
+        ttk.Label(chat, text="Befehl an").grid(row=0, column=0, sticky="w")
+        self.chat_target = tk.StringVar(value="Meine Armee")
+        ttk.Combobox(chat, textvariable=self.chat_target, values=["Meine Armee", "Gegner"], state="readonly",
+                     width=12).grid(row=0, column=1, padx=4)
+        self.chat_var = tk.StringVar()
+        self.chat_entry = ttk.Entry(chat, textvariable=self.chat_var)
+        self.chat_entry.grid(row=0, column=2, sticky="ew", padx=4)
+        self.chat_entry.bind("<Return>", lambda e: self._send_order())
+        ttk.Button(chat, text="Senden", command=self._send_order).grid(row=0, column=3, padx=2)
+        ttk.Button(chat, text="Befehle aufheben", command=self._clear_orders).grid(row=0, column=4, padx=2)
+        self.active_orders = ttk.Label(chat, text="", foreground="#1a5fb4", wraplength=900, justify="left")
+        self.active_orders.grid(row=1, column=0, columnspan=5, sticky="w", pady=(2, 0))
         ttk.Label(f, text="Feld rechts neben jedem Button = Hotkey (z. B. F9, Pause, Num5, Strg+Shift+F9). Empire sieht "
                           "jede Taste ebenfalls – Tasten wählen, die das Spiel nicht belegt. Gilt ab dem nächsten Start.",
-                  foreground="#777").grid(row=3, column=0, sticky="w", pady=(4, 0))
+                  foreground="#777").grid(row=4, column=0, sticky="w", pady=(4, 0))
         self.log = tk.Text(f, height=10, wrap="word", state="disabled", font=("Consolas", 9), background="#fafafa")
         self.log.grid(row=2, column=0, sticky="nsew", pady=(6, 0))
         sb = ttk.Scrollbar(f, command=self.log.yview)
@@ -563,7 +609,7 @@ class App(tk.Tk):
                "--interval", str(s["interval"]), "--close-interval", str(s["close_interval"]),
                "--strategy", str(RUNTIME / "strategy.md"),
                "--orders-player", str(RUNTIME / "orders_player.txt"), "--orders-enemy", str(RUNTIME / "orders_enemy.txt"),
-               "--deploy-prompt", str(RUNTIME / "deploy_prompt.txt"),
+               "--deploy-prompt", str(RUNTIME / "deploy_prompt.txt"), "--roster", str(RUNTIME / "roster.json"),
                "--hotkeys", ",".join(f"{c}={k}" for c, k in s["hotkeys"].items() if k)]
         if model:
             cmd += ["--model", model]
@@ -584,9 +630,69 @@ class App(tk.Tk):
         self._save_now()   # Aufstellungsprompt ist damit aktuell
         try:
             with (EmpireBridge().dir / "commands.txt").open("a", encoding="utf-8") as f:
-                f.write(cmd + "\n")
+                f.write(cmd.replace("\n", " ").replace("\r", " ") + "\n")
         except (Exception, SystemExit) as e:
             messagebox.showerror("Befehl", str(e))
+
+    def _running(self) -> bool:
+        if self.proc and self.proc.poll() is None:
+            return True
+        messagebox.showinfo("Feldherr", "Der Feldherr läuft nicht – erst „▶ Starten“.")
+        return False
+
+    # ---------- Chat ----------
+    def _send_order(self) -> None:
+        text = self.chat_var.get().strip()
+        if not text or not self._running():
+            return
+        target = "enemy" if self.chat_target.get() == "Gegner" else "player"
+        self._action(f"order {target} {text}")
+        self.chat_var.set("")
+
+    def _clear_orders(self) -> None:
+        if self._running():
+            self._action(f"order_clear {'enemy' if self.chat_target.get() == 'Gegner' else 'player'}")
+
+    # ---------- Einheiten ----------
+    def _give(self, cmd: str) -> None:
+        sel = self.units_tree.selection()
+        if not sel:
+            messagebox.showinfo("Einheiten", "Bitte zuerst eine oder mehrere Einheiten in der Liste markieren.")
+            return
+        if self._running():
+            self._action(f"{cmd} {','.join(sel)}")
+
+    def _refresh_units(self) -> None:
+        """Liste aus runtime/roster.json (schreibt der Feldherr jede Sekunde); Auswahl bleibt erhalten."""
+        try:
+            data = json.loads((RUNTIME / "roster.json").read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return
+        player = data.get("player_alliance") or 1
+        want_player = self.units_side.get() == "player"
+        rows = [u for u in data.get("units", []) if (u["alliance"] == player) == want_player]
+        tree = self.units_tree
+        keep = {u["bid"] for u in rows}
+        for iid in tree.get_children():
+            if iid not in keep:
+                tree.delete(iid)
+        for i, u in enumerate(rows):
+            vals = (u["name"], u["type"], f"{u['men']}/{u['men_start']}", u.get("placement", ""), u["lead"], u.get("status", ""))
+            if tree.exists(u["bid"]):
+                tree.item(u["bid"], values=vals)
+                tree.move(u["bid"], "", i)
+            else:
+                tree.insert("", i, iid=u["bid"], values=vals)
+        ai = sum(1 for u in rows if u["lead"] == "KI")
+        self.units_info.config(text=f"Spielzeit {data.get('time', 0):.0f} s, Phase {data.get('phase', '?')}: "
+                                    f"{ai} von {len(rows)} Einheiten bei der KI")
+        orders = data.get("orders") or {}
+        lines = []
+        for a, lst in orders.items():
+            if lst:
+                who = "meine Armee" if int(a) == player else "Gegner"
+                lines.append(f"Aktive Befehle an {who}: " + " | ".join(lst))
+        self.active_orders.config(text="\n".join(lines))
 
     def _reader(self, proc: subprocess.Popen) -> None:
         for line in proc.stdout:
@@ -599,6 +705,12 @@ class App(tk.Tk):
             self.proc.terminate()
 
     def _pump(self) -> None:
+        self._pump_n = getattr(self, "_pump_n", 0) + 1
+        if self._pump_n % 7 == 0:   # etwa jede Sekunde: Einheitenliste und aktive Befehle aktualisieren
+            try:
+                self._refresh_units()
+            except tk.TclError:
+                pass
         while not self.calls.empty():
             try:
                 self.calls.get_nowait()()

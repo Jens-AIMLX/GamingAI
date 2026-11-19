@@ -90,6 +90,8 @@ class EmpireBridge:
     def __init__(self, directory: str | os.PathLike | None = None):
         self.dir = Path(directory) if directory else default_dir()
         self.dir.mkdir(parents=True, exist_ok=True)
+        self._acked = 0                                   # hoechste vom Spiel ausgefuehrte seq (aus state.json)
+        self._unacked: list[tuple[int, list[Order]]] = []  # gesendet, aber noch nicht ausgefuehrt
         self._seq = self._initial_seq()
 
     # ---------- Lagebild ----------
@@ -99,7 +101,9 @@ class EmpireBridge:
         for _ in range(5):
             try:
                 text = path.read_text(encoding="utf-8")
-                return json.loads(text)
+                st = json.loads(text)
+                self._acked = max(self._acked, int(st.get("last_order_seq") or 0))
+                return st
             except FileNotFoundError:
                 return None
             except (json.JSONDecodeError, PermissionError, UnicodeDecodeError):
@@ -143,9 +147,16 @@ class EmpireBridge:
         return seq
 
     def send(self, orders: Iterable[Order | dict]) -> int:
-        """Schreibt einen Befehlssatz; das Spiel fuehrt ihn beim naechsten Takt einmal aus. Gibt seq zurueck."""
+        """Schreibt einen Befehlssatz; das Spiel fuehrt ihn beim naechsten Takt einmal aus. Gibt seq zurueck.
+
+        orders.lua wird bei jedem Senden ersetzt, das Spiel liest sie einmal pro Takt. Wurde ein frueherer Satz noch
+        nicht ausgefuehrt (last_order_seq im Lagebild kleiner), geht er sonst verloren - deshalb werden alle noch nicht
+        quittierten Saetze vorne mitgeschickt (die Befehle sind wiederholbar: take/release/halt/goto/attack)."""
+        new = [o if isinstance(o, Order) else Order(**o) for o in orders]
+        self._unacked = [(s, o) for s, o in self._unacked if s > self._acked][-20:]
         self._seq += 1
-        lst = [o if isinstance(o, Order) else Order(**o) for o in orders]
+        self._unacked.append((self._seq, new))
+        lst = [o for _, batch in self._unacked for o in batch]
         text = "return " + to_lua({"seq": self._seq, "orders": lst}) + "\n"
         tmp = self.dir / "orders.lua.tmp"
         tmp.write_text(text, encoding="utf-8")
