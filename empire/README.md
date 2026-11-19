@@ -65,6 +65,9 @@ Doppelklick auf `start_ui.bat` (oder `python python\ui.py`):
 - **Befehle – Meine Armee / Gegner:** verbindliche Taktik je Seite. Sie steht im System-Prompt vor den Ratschlägen
   und gilt auch dann, wenn das Modell sich überlegen fühlt; das Modell erfährt außerdem, welche Seite es führt
   (Spielerarmee oder Gegner).
+- **Prüfen & verbessern…** (Button an jedem Prompt-Feld): Claude analysiert den Text vor dem Hintergrund dessen,
+  was der Feldherr ausführen kann (Teil 1: Analyse – Ausführbares, nicht Befehlbares, Unklares,
+  Widersprüche) und schlägt eine bessere Fassung vor (Teil 2, bearbeitbar). „Übernehmen“ setzt sie ins Feld.
 - Strategie, Befehle und Aufstellungsprompt werden **vor jedem Plan neu gelesen** – Änderungen wirken während der
   laufenden Schlacht ab dem nächsten Plan.
 - **Aufstellung:** freier Prompt, wie aufgestellt werden soll (wird bei jedem Auslösen neu gelesen).

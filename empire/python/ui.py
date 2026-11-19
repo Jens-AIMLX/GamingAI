@@ -119,6 +119,7 @@ class App(tk.Tk):
         self.minsize(860, 760)
         self.proc: subprocess.Popen | None = None
         self.q: queue.Queue[str] = queue.Queue()
+        self.calls: queue.Queue = queue.Queue()   # Rueckrufe aus Hintergrund-Threads, ausgefuehrt im Hauptthread
         self._save_job: str | None = None
         self._loading = True
         self._build()
@@ -213,6 +214,8 @@ class App(tk.Tk):
         ttk.Button(bb, text="Speichern", command=self._strategy_save).pack(side="left", padx=2)
         ttk.Button(bb, text="Als neue Vorlage…", command=self._strategy_save_as).pack(side="left", padx=2)
         ttk.Button(bb, text="Verwerfen", command=self._strategy_discard).pack(side="left", padx=2)
+        ttk.Button(bb, text="Prüfen & verbessern…",
+                   command=lambda: self._review("strategy", self.strat_text, "Strategie")).pack(side="left", padx=(10, 2))
         self.strat_text = self._text(f, 8, "")
         self.strat_text.grid(row=1, column=0, columnspan=3, sticky="ew", pady=4)
         ttk.Label(f, text="Vorlage = allgemeine Ratschläge für beide Seiten (nur Zeilen mit „- “). Verbindliche Taktik "
@@ -224,20 +227,31 @@ class App(tk.Tk):
         f.grid(row=3, column=0, sticky="ew", **pad)
         f.columnconfigure(0, weight=1)
         f.columnconfigure(1, weight=1)
-        ttk.Label(f, text="Meine Armee (wenn die KI sie führt):").grid(row=0, column=0, sticky="w")
-        ttk.Label(f, text="Gegner (wenn die KI ihn führt):").grid(row=0, column=1, sticky="w", padx=(8, 0))
+        hp = ttk.Frame(f)
+        hp.grid(row=0, column=0, sticky="ew")
+        ttk.Label(hp, text="Meine Armee (wenn die KI sie führt):").pack(side="left")
+        he = ttk.Frame(f)
+        he.grid(row=0, column=1, sticky="ew", padx=(8, 0))
+        ttk.Label(he, text="Gegner (wenn die KI ihn führt):").pack(side="left")
         self.orders_player_text = self._text(f, 6, self.s.get("orders_player", ""))
         self.orders_player_text.grid(row=1, column=0, sticky="ew", pady=4)
         self.orders_enemy_text = self._text(f, 6, self.s.get("orders_enemy", ""))
         self.orders_enemy_text.grid(row=1, column=1, sticky="ew", pady=4, padx=(8, 0))
+        ttk.Button(hp, text="Prüfen & verbessern…",
+                   command=lambda: self._review("orders_player", self.orders_player_text, "Befehle meine Armee")).pack(side="right")
+        ttk.Button(he, text="Prüfen & verbessern…",
+                   command=lambda: self._review("orders_enemy", self.orders_enemy_text, "Befehle Gegner")).pack(side="right")
 
         # Aufstellung
         f = ttk.LabelFrame(root, text="Aufstellung (Prompt für „Aufstellung übernehmen“ – wird bei jedem Auslösen neu gelesen)", padding=6)
         f.grid(row=4, column=0, sticky="ew", **pad)
         f.columnconfigure(0, weight=1)
-        ttk.Label(f, text="Wie soll aufgestellt werden? z. B. „Infanterie in zwei Linien, Artillerie auf dem Hügel "
-                          "rechts, Kavallerie als Reserve hinter dem linken Flügel“", foreground="#555").grid(
-            row=0, column=0, sticky="w")
+        hd = ttk.Frame(f)
+        hd.grid(row=0, column=0, sticky="ew")
+        ttk.Label(hd, text="Wie soll aufgestellt werden? z. B. „Infanterie in zwei Linien, Artillerie auf dem Hügel "
+                           "rechts, Kavallerie als Reserve hinter dem linken Flügel“", foreground="#555").pack(side="left")
+        ttk.Button(hd, text="Prüfen & verbessern…",
+                   command=lambda: self._review("deploy", self.deploy_text, "Aufstellungsprompt")).pack(side="right")
         self.deploy_text = self._text(f, 4, self.s.get("deploy_prompt", ""))
         self.deploy_text.grid(row=1, column=0, sticky="ew", pady=4)
 
@@ -326,7 +340,7 @@ class App(tk.Tk):
                     detail = f" – Ursache: {type(cause).__name__}: {str(cause)[:120]}" if cause else ""
                     msg = f"Prüfung fehlgeschlagen: {name}{detail}"
                 msg = msg.replace(k, "<Schlüssel>")
-            self.after(0, lambda: self.key_status.config(text=msg))
+            self.calls.put(lambda: self.key_status.config(text=msg))
 
         threading.Thread(target=run, daemon=True).start()
 
@@ -393,6 +407,81 @@ class App(tk.Tk):
         self.s.setdefault("strategy_drafts", {}).pop(name, None)
         self._load_strategy(name)
         self._save_now()
+
+    # ---------- Prompt pruefen & verbessern ----------
+    def _review(self, kind: str, widget: tk.Text, title: str) -> None:
+        """Claude analysiert den Text (Teil 1) und schlaegt eine bessere Fassung vor (Teil 2, bearbeitbar).
+        'Übernehmen' setzt den (ggf. angepassten) Vorschlag ins Feld."""
+        text = widget.get("1.0", "end").strip()
+        if not text:
+            messagebox.showinfo(title, "Das Feld ist leer – es gibt nichts zu prüfen.")
+            return
+        key = key_load() or os.environ.get("ANTHROPIC_API_KEY")
+        if not key:
+            messagebox.showinfo(title, "Für die Prüfung wird ein API-Schlüssel gebraucht (oben eintragen und speichern).")
+            return
+        backend, model = MODELS.get(self.model_var.get(), ("claude", None))
+        model = model or "claude-sonnet-5-5"   # Regel-Feldherr gewaehlt: Pruefung trotzdem mit Claude
+        win = tk.Toplevel(self)
+        win.title(f"Prüfen & verbessern – {title}")
+        win.geometry("900x720")
+        win.transient(self)
+        frm = ttk.Frame(win, padding=8)
+        frm.pack(fill="both", expand=True)
+        frm.columnconfigure(0, weight=1)
+        frm.rowconfigure(1, weight=1)
+        frm.rowconfigure(3, weight=1)
+        status = ttk.Label(frm, text=f"Analysiere mit {model} … (dauert etwa 10–30 s)", foreground="#1a7f37")
+        status.grid(row=0, column=0, sticky="w")
+        ana = tk.Text(frm, height=12, wrap="word", font=("Segoe UI", 9), background="#f6f6f6")
+        ana.grid(row=1, column=0, sticky="nsew", pady=(4, 8))
+        ttk.Label(frm, text="Teil 2 – Vorschlag (bearbeitbar, „Übernehmen“ ersetzt den Text im Feld):").grid(row=2, column=0, sticky="w")
+        sug = tk.Text(frm, height=12, wrap="word", undo=True, font=("Segoe UI", 9))
+        sug.grid(row=3, column=0, sticky="nsew", pady=4)
+        bar = ttk.Frame(frm)
+        bar.grid(row=4, column=0, sticky="e")
+
+        def apply():
+            new = sug.get("1.0", "end").strip()
+            if not new:
+                return
+            widget.delete("1.0", "end")
+            widget.insert("1.0", new)
+            self._save_now()
+            self._append(f"{title}: Vorschlag übernommen (wirkt ab dem nächsten Plan).\n")
+            win.destroy()
+
+        take = ttk.Button(bar, text="Übernehmen", command=apply, state="disabled")
+        take.pack(side="left", padx=4)
+        ttk.Button(bar, text="Schließen", command=win.destroy).pack(side="left")
+        ana.insert("1.0", "Teil 1 – Analyse folgt …")
+        ana.config(state="disabled")
+
+        def done(res, err):
+            if not win.winfo_exists():
+                return
+            ana.config(state="normal")
+            ana.delete("1.0", "end")
+            if err:
+                status.config(text="Prüfung fehlgeschlagen", foreground="#b00020")
+                ana.insert("1.0", err)
+            else:
+                status.config(text=f"Fertig ({model}).", foreground="#1a7f37")
+                ana.insert("1.0", "Teil 1 – Analyse\n\n" + res.analysis.strip())
+                sug.insert("1.0", res.suggestion.strip())
+                take.config(state="normal")
+            ana.config(state="disabled")
+
+        def run():
+            try:
+                from empire_general.prompt_eval import evaluate
+                res = evaluate(kind, text, api_key=key, model=model)
+                self.calls.put(lambda: done(res, None))
+            except Exception as e:  # Anzeige im Dialog
+                msg = str(e).replace(key, "<Schlüssel>")
+                self.calls.put(lambda: done(None, msg))
+
+        threading.Thread(target=run, daemon=True).start()
 
     # ---------- Sichern ----------
     def _schedule_save(self) -> None:
@@ -500,6 +589,11 @@ class App(tk.Tk):
             self.proc.terminate()
 
     def _pump(self) -> None:
+        while not self.calls.empty():
+            try:
+                self.calls.get_nowait()()
+            except Exception as e:  # ein fehlerhafter Rueckruf darf das Steuerpult nicht anhalten
+                self._append(f"Interner Fehler: {e}\n")
         try:
             while True:
                 line = self.q.get_nowait()
