@@ -105,7 +105,7 @@ class WireReflex(BaseModel):
 
 class WireGroup(BaseModel):
     name: str = Field(description="short label, e.g. 'centre line'")
-    unit_ids: list[int] = Field(description="your unit ids; line: left to right as the troops face facing_deg; column: front to back")
+    unit_ids: list[int] = Field(description="your unit ids (order does not matter: each unit gets the slot nearest to where it stands)")
     task: Literal["move", "attack", "halt", "withdraw"]
     target_point: list[float] = Field(description="move: [x, z] centre of the line / head of the column; otherwise []")
     facing_deg: float = Field(description="move: front direction on arrival, 0 = north, 90 = east; -1 = towards the enemy army")

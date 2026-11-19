@@ -106,12 +106,17 @@ class Executor:
         out: dict[int, tuple[float, float]] = {}
         if shape == "none" or len(units) == 1:
             return {u.id: c for u in units}
+        # Plaetze nach der AKTUELLEN Position vergeben, nicht nach der Reihenfolge im Plan: sonst laufen Einheiten
+        # quer durch die Linie, wenn das Modell sie gespiegelt aufzaehlt (z. B. Kartenreihenfolge bei Front nach Sueden
+        # -> "Kreuzaufstellung", Schlacht 2026-11-19).
         if shape == "column":
             dx, dz = _dir(face)
+            units = sorted(units, key=lambda u: -(u.x * dx + u.z * dz))      # vorderste Einheit an die Spitze
             for i, u in enumerate(units):
                 out[u.id] = (c[0] - dx * i * max(gap, 20.0), c[1] - dz * i * max(gap, 20.0))
             return out
         rx, rz = _right(face)
+        units = sorted(units, key=lambda u: u.x * rx + u.z * rz)               # links (aus Sicht der Truppe) zuerst
         fronts = [frontage_m(u.role, u.men) for u in units]
         width = sum(fronts) + gap * (len(units) - 1)
         pos = -width / 2

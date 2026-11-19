@@ -34,8 +34,9 @@ Map: coordinates are metres, x = east, z = north; [x, z] points. Directions in d
 
 Tasks (one per group):
 - move: go to target_point [x, z] and stand there. shape "line" = units side by side across facing_deg \
-(unit_ids listed left to right as the troops see it when they face facing_deg), "column" = one behind the other \
-(front to back), "none" = each unit goes to target_point itself. spacing_m = gap between neighbouring units. \
+(the subordinate gives each unit the slot nearest to where it stands, so the order of unit_ids does not matter; \
+to put certain units on a wing, give them their own group and target_point), "column" = one behind the other \
+(the foremost unit leads), "none" = each unit goes to target_point itself. spacing_m = gap between neighbouring units. \
 facing_deg -1 = towards the enemy army. waypoints = points to pass first (a flank march). Units on the move \
 face the way they march; a line forms when they arrive.
 - attack: every unit of the group attacks target_unit: infantry and artillery move into range and fire at it, \
