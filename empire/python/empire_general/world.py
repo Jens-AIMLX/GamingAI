@@ -37,6 +37,7 @@ class Unit:
     leaving: bool
     missile_range: float
     controlled: bool
+    y: float = 0.0          # Gelaendehoehe unter der Einheit (Spiel liefert kein Gelaende, nur das)
     selected: bool = False  # im Spiel markiert
     manual: bool = False    # per Hotkey an den Spieler gegeben
     grouped: bool = False   # im Spiel gruppiert -> nicht uebernehmbar, bis die Gruppe aufgeloest ist
@@ -76,6 +77,40 @@ def centroid(units: list[Unit]) -> tuple[float, float] | None:
     if not us:
         return None
     return (sum(u.x for u in us) / len(us), sum(u.z for u in us) / len(us))
+
+
+@dataclass
+class Frame:
+    """Bezugssystem einer Armee: Blick zum Feind. forward = zum Feind, right = rechts aus Sicht der Truppe.
+    depth(p) > 0 = vor dem Zentrum; front/rear = Tiefe der vordersten/hintersten Einheit."""
+    origin: tuple[float, float]
+    face: float
+    front: float
+    rear: float
+    left: float = 0.0        # Seitenlage der aeussersten Einheit links / rechts
+    right_edge: float = 0.0
+
+    @property
+    def fwd(self) -> tuple[float, float]:
+        r = math.radians(self.face)
+        return math.sin(r), math.cos(r)
+
+    @property
+    def right(self) -> tuple[float, float]:
+        r = math.radians(self.face)
+        return math.cos(r), -math.sin(r)
+
+    def depth(self, p: tuple[float, float]) -> float:
+        f = self.fwd
+        return (p[0] - self.origin[0]) * f[0] + (p[1] - self.origin[1]) * f[1]
+
+    def lateral(self, p: tuple[float, float]) -> float:
+        r = self.right
+        return (p[0] - self.origin[0]) * r[0] + (p[1] - self.origin[1]) * r[1]
+
+    def point(self, depth: float, lateral: float) -> tuple[float, float]:
+        f, r = self.fwd, self.right
+        return (self.origin[0] + f[0] * depth + r[0] * lateral, self.origin[1] + f[1] * depth + r[1] * lateral)
 
 
 @dataclass
@@ -125,6 +160,7 @@ class World:
                 unit = Unit(
                     id=uid, bid=bid, alliance=a, type=u.get("type") or "?", role=role_of(u.get("type") or "", rng),
                     men=int(u.get("men") or 0), men_start=int(u.get("men_start") or 0), x=x, z=z,
+                    y=float(u.get("y") or 0.0),
                     bearing=float(u.get("bearing") or 0.0), moving=bool(u.get("moving")),
                     routing=bool(u.get("routing")), leaving=bool(u.get("leaving")), missile_range=rng,
                     controlled=bool(u.get("controlled")), selected=bool(u.get("selected")),
@@ -145,8 +181,36 @@ class World:
         return prefix + self._names[bid]
 
     def by_name(self, name: str) -> Unit | None:
-        n = name.strip().lower()
+        n = name.strip().strip("'\"").lower()
         return next((u for u in self.units.values() if u.name.lower() == n), None)
+
+    def find(self, ref: str) -> Unit | None:
+        """Einheit nach Name ('Artillerie 1') oder kurzer ID ('#203', '203')."""
+        r = ref.strip().strip("'\"")
+        if r.lstrip("#").isdigit():
+            return self.units.get(int(r.lstrip("#")))
+        return self.by_name(r)
+
+    def frame(self, alliance: int) -> Frame | None:
+        own = self.side(alliance) or self.side(alliance, alive=False)
+        c, ce = centroid(own), centroid(self.enemies(alliance))
+        if not c or not ce:
+            return None
+        face = bearing_to(c, ce)
+        # Stehen die Truppen einheitlich ausgerichtet und grob zum Feind, gilt ihre mittlere Blickrichtung: sonst
+        # kippt das Bezugssystem schon bei leicht seitlich versetztem Feind, und eine gerade Linie wirkt schief/tief.
+        sx = sum(math.sin(math.radians(u.bearing)) for u in own)
+        sz = sum(math.cos(math.radians(u.bearing)) for u in own)
+        if own and math.hypot(sx, sz) / len(own) > 0.8:
+            mean = math.degrees(math.atan2(sx, sz)) % 360
+            if abs((mean - face + 180) % 360 - 180) < 45:
+                face = mean
+        f = Frame(origin=c, face=face, front=0.0, rear=0.0)
+        ds = [f.depth(u.pos) for u in own]
+        f.front, f.rear = max(ds), min(ds)
+        ls = [f.lateral(u.pos) for u in own]
+        f.left, f.right_edge = min(ls), max(ls)
+        return f
 
     def placement(self, u: Unit) -> str:
         """Lage der Einheit in ihrer Armee aus Sicht der Armee (Blick zum Feind): Fluegel und vorn/hinten."""

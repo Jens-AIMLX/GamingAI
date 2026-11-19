@@ -57,12 +57,13 @@ def is_ranged(role: str, missile_range: float | None) -> bool:
 
 
 def frontage_m(role: str, men: int) -> float:
-    """Grobe Frontbreite einer Einheit in Formation (Meter) fuer Linienplanung."""
+    """Geschaetzte Frontbreite einer Einheit in Formation (Meter) fuer Linienplanung. Die Spiel-API liefert die
+    Ausdehnung nicht; die Werte sind bewusst eher grosszuegig (lieber Luecke als Ueberlappung)."""
     men = max(int(men or 0), 1)
     if role == "artillery":
-        return 12.0
+        return max(24.0, men * 0.6)       # Geschuetze mit ~10 m Abstand
     if is_cavalry(role):
-        return max(10.0, men / 2 * 1.6)   # 2 Glieder, ~1,6 m pro Reiter
+        return max(12.0, men / 2 * 1.8)   # 2 Glieder, ~1,8 m pro Reiter
     if role == "light_infantry":
-        return max(10.0, men / 2 * 1.2)   # aufgelockert
-    return max(10.0, men / 3 * 0.8)       # 3 Glieder Linieninfanterie
+        return max(12.0, men / 2 * 1.4)   # aufgelockert
+    return max(12.0, men / 3 * 1.0)       # 3 Glieder Linieninfanterie

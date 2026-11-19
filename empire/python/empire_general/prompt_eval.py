@@ -63,6 +63,16 @@ reflexes (engage_within_m, keep_range_m, near/routed/arrived/after reflexes, fir
 (unit names/ids, roles like general, artillery, cavalry) the general has. If something cannot be ordered (e.g. \
 ammunition type, formation type), say so in the analysis and rephrase it to the closest executable behaviour.
 - If an open line is already good, return it unchanged.
+- When a CURRENT BATTLEFIELD is given (live from the running battle), the player's lines refer to that army: check \
+each line against it - which real units are meant (names as listed, e.g. 'Infanterie 2', 'Artillerie 1'), whether \
+there are enough of them, whether the space fits their frontages. Where the player's meaning is clear, make the \
+line concrete in the way the general places groups: relative to the front, to the rear or to a named unit - \
+behind / in front (metres), left / right (metres, gap), as seen by the army facing the enemy. Never write world \
+coordinates. Never change who is meant: if the player names a unit kind (e.g. "the heavy artillery"), you may \
+list the matching units, but do not add or drop units. Terrain (hills, crests, woods, rivers) is not known to the \
+general - only the ground height under each unit; if a line relies on terrain, keep it, say in the analysis that \
+the general can only approximate it from those heights, and add the closest executable placement in the same line.
+- Without a CURRENT BATTLEFIELD, judge only the wording and do not name units that may not exist.
 Write in German, as plain text without Markdown (no ** or #). Lines start with '- '.\
 """
 
@@ -91,7 +101,7 @@ def classify(text: str, baseline: list[str] | None) -> tuple[list[str], list[int
 
 
 def review_lines(kind: str, text: str, baseline: list[str] | None, *, api_key: str | None = None,
-                 model: str = "claude-sonnet-5-5", effort: str = "medium") -> ReviewResult:
+                 model: str = "claude-sonnet-5-5", effort: str = "medium", situation: str = "") -> ReviewResult:
     import anthropic
 
     if kind not in KINDS:
@@ -102,7 +112,10 @@ def review_lines(kind: str, text: str, baseline: list[str] | None, *, api_key: s
                             merged_text="\n".join(lines), protected=len(prot), open=0)
     protected_txt = "\n".join(lines[i] for i in prot) or "(none)"
     open_txt = "\n".join(f"{n + 1}. {lines[i]}" for n, i in enumerate(opn))
-    user = (f"Type of prompt: {KINDS[kind]}.\n\n"
+    battlefield = (f"CURRENT BATTLEFIELD (live from the running battle - the lines refer to this army):\n-----\n"
+                   f"{situation.strip()}\n-----\n\n") if situation.strip() else \
+        "CURRENT BATTLEFIELD: not available (no battle running) - judge only the wording.\n\n"
+    user = (f"Type of prompt: {KINDS[kind]}.\n\n" + battlefield +
             f"PROTECTED lines (already reviewed - do not change, context only):\n-----\n{protected_txt}\n-----\n\n"
             f"OPEN lines to review ({len(opn)}; return exactly {len(opn)} entries in 'revised', same order):\n"
             f"-----\n{open_txt}\n-----\n\nGive the analysis and the revised open lines.")

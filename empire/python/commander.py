@@ -34,7 +34,7 @@ import time
 from pathlib import Path
 
 from empire_bridge import EmpireBridge, Order
-from empire_general.describe import describe, describe_deployment
+from empire_general.describe import describe, describe_deployment, situation_summary
 from empire_general.executor import Executor
 from empire_general.general import General, load_text, make_general, system_prompt
 from empire_general.plan import Plan
@@ -171,7 +171,9 @@ def write_roster(path: Path, w: World, sides: dict) -> None:
                       "men": u.men, "men_start": u.men_start, "lead": lead, "alive": u.alive,
                       "status": "flieht" if u.routing else ("vernichtet" if u.men == 0 else ""),
                       "placement": w.placement(u) if u.alive else ""})
+    alls = sorted({u.alliance for u in w.units.values()})
     data = {"time": w.time, "phase": w.phase, "player_alliance": w.player_alliance or 1, "units": units,
+            "situation": {str(a): situation_summary(w, a) for a in alls},
             "orders": {str(a): [t for _, t in s.immediate] for a, s in sides.items()}}
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -485,7 +487,10 @@ def main() -> int:
                 ids = {uid for g in s.pending_deploy.groups for uid in g.unit_ids}
                 ready = all(w.units[i].controlled for i in ids if i in w.units and not w.units[i].manual)
                 if ready or w.time - s.pending_since > 3:
-                    s.ex.set_plan(s.pending_deploy, w)
+                    s.ex.set_plan(s.pending_deploy, w, deploy=True)
+                    for wtxt in s.ex.plan_warnings:
+                        log({"type": "warning", "alliance": a, "t": w.time, "text": wtxt})
+                        say(f"[{w.time:6.0f}s] Allianz {a}: {wtxt}")
                     s.pending_deploy = None
                     s.deploying = True
                     s.plans += 1

@@ -13,7 +13,7 @@ from empire_bridge import Order
 
 from .plan import GroupOrder, Plan, Reflex
 from .units import frontage_m
-from .world import Unit, World, bearing_to, centroid, dist
+from .world import Frame, Unit, World, bearing_to, centroid, dist
 
 ARRIVE_M = 12.0
 REISSUE_S = 6.0
@@ -58,15 +58,21 @@ class Executor:
         self.cease_fire: set[int] = set()           # Artillerie, die wegen eigener Truppen am Ziel nicht feuert
 
     # ---------- neuer Plan ----------
-    def set_plan(self, plan: Plan, w: World) -> None:
+    DEPLOY_MAX_M = 150.0      # Aufstellung: hoechstens so weit hinter die hinterste Einheit
+    DEPLOY_SIDE_M = 100.0     # Aufstellung: hoechstens so weit seitlich ueber die aeusseren Fluegel hinaus
+    DEPLOY_FRONT_M = 10.0     # Aufstellung: hoechstens so weit vor die aktuelle Front
+
+    def set_plan(self, plan: Plan, w: World, deploy: bool = False) -> None:
         self.plan = plan
         self.groups = []
         self.plan_warnings = []
         mine = {u.id: u for u in w.side(self.alliance) if u.controlled}
         foes = w.enemies(self.alliance)
         ce = centroid(foes)
+        fr = w.frame(self.alliance)
         taken: set[int] = set()
-        for g in plan.groups:
+        resolved = self._resolve_relative(plan, w, mine, fr)
+        for gi, g in enumerate(plan.groups):
             ids = []
             for uid in g.unit_ids:
                 if uid in mine and uid not in taken:
@@ -78,13 +84,22 @@ class Executor:
                 continue
             gr = GroupRun(order=g, unit_ids=ids, plan_time=w.time, alive_at_plan=set(ids),
                           enemies_alive_at_plan={u.id for u in foes}, fired=[False] * len(g.reflexes or []))
-            if g.task == "move" and g.target_point and len(g.target_point) >= 2:
+            target = None
+            if g.task == "move" and gi in resolved:
+                target = resolved[gi]
+            elif g.task == "move" and g.target_point and len(g.target_point) >= 2:
                 c = (float(g.target_point[0]), float(g.target_point[1]))
                 face = g.facing_deg if g.facing_deg is not None else (bearing_to(c, ce) if ce else 0.0)
-                finals = self._formation([mine[i] for i in ids], c, face, g.shape, g.spacing_m)
+                target = (c, face, self._formation([mine[i] for i in ids], c, face, g.shape, g.spacing_m))
+            if target:
+                c, face, finals = target
+                finals = {uid: finals[uid] for uid in ids if uid in finals}
+                if deploy:
+                    finals = self._deploy_guard(g.name, finals, mine, fr)
                 for uid in ids:
                     off = (finals[uid][0] - c[0], finals[uid][1] - c[1])
-                    wps = [(float(p[0]) + off[0], float(p[1]) + off[1]) for p in (g.waypoints or []) if len(p) >= 2]
+                    wps = [] if deploy else [(float(p[0]) + off[0], float(p[1]) + off[1])
+                                             for p in (g.waypoints or []) if len(p) >= 2]
                     gr.stages[uid] = wps + [finals[uid]]
                     gr.places[uid] = finals[uid]
             else:
@@ -100,6 +115,99 @@ class Executor:
             self.groups.append(gr)
         # Neue Befehle sofort erzwingen
         self.last.clear()
+
+    def _resolve_relative(self, plan: Plan, w: World, mine: dict[int, Unit], fr: Frame | None
+                          ) -> dict[int, tuple[tuple[float, float], float, dict[int, tuple[float, float]]]]:
+        """Gruppen mit ref (Front, Nachhut oder Einheit) im Bezugssystem der Armee platzieren. Bezieht sich eine Gruppe
+        auf eine Einheit, die im selben Plan verlegt wird, zaehlt deren neuer Platz (mehrere Durchlaeufe; bei
+        Zirkelbezug die aktuelle Position)."""
+        out: dict[int, tuple] = {}
+        if fr is None:
+            return out
+        members: dict[int, list[int]] = {}
+        owner: dict[int, int] = {}
+        taken: set[int] = set()
+        for gi, g in enumerate(plan.groups):
+            ids = [u for u in g.unit_ids if u in mine and u not in taken]
+            taken.update(ids)
+            members[gi] = ids
+            for u in ids:
+                owner[u] = gi
+        todo = [gi for gi, g in enumerate(plan.groups) if g.task == "move" and g.ref and members[gi]]
+        planned: dict[int, tuple[float, float]] = {}
+        force = False
+        while todo:
+            progress = False
+            for gi in list(todo):
+                g = plan.groups[gi]
+                key = g.ref.strip().lower()
+                half = 0.0
+                if key == "front":
+                    base_d, base_l = fr.front, 0.0
+                elif key == "rear":
+                    base_d, base_l = fr.rear, 0.0
+                else:
+                    ru = w.find(g.ref)
+                    if ru is None:
+                        self.plan_warnings.append(f"group '{g.name}': unknown ref '{g.ref}' - placed relative to your front instead")
+                        base_d, base_l = fr.front, 0.0
+                    else:
+                        og = owner.get(ru.id)
+                        if og is not None and og != gi and og in todo and not force:
+                            continue          # Bezugseinheit wird erst noch platziert
+                        pos = planned.get(ru.id, ru.pos)
+                        base_d, base_l = fr.depth(pos), fr.lateral(pos)
+                        half = frontage_m(ru.role, ru.men) / 2
+                face = g.facing_deg if g.facing_deg is not None else fr.face
+                lat = base_l + (g.right_m + (half if g.right_m > 0 else -half) if g.right_m else 0.0)
+                anchor = fr.point(base_d - g.back_m, lat)
+                units = [mine[u] for u in members[gi]]
+                if g.shape == "line" and len(units) > 1 and g.attach != "centre":
+                    width = sum(frontage_m(u.role, u.men) for u in units) + g.spacing_m * (len(units) - 1)
+                    rx, rz = _right(face)
+                    s = width / 2 if g.attach == "left_end" else -width / 2
+                    anchor = (anchor[0] + rx * s, anchor[1] + rz * s)
+                finals = self._formation(units, anchor, face, g.shape, g.spacing_m)
+                planned.update(finals)
+                out[gi] = (anchor, face, finals)
+                todo.remove(gi)
+                progress = True
+            if not progress:
+                force = True           # Zirkelbezug: aktuelle Positionen verwenden
+        return out
+
+    def _deploy_guard(self, name: str, finals: dict[int, tuple[float, float]], mine: dict[int, Unit],
+                      fr: Frame | None) -> dict[int, tuple[float, float]]:
+        """Aufstellung: Ziele bleiben im Bereich, den die Armee heute einnimmt - nicht vor die aktuelle Front
+        (Richtung Feind), hoechstens DEPLOY_MAX_M hinter die hinterste Einheit und hoechstens DEPLOY_SIDE_M seitlich
+        ueber die aeusseren Fluegel hinaus. Seitliches Umgruppieren innerhalb der Armee bleibt erlaubt (eine 300 m
+        breite Armee darf ihre Fluegel tauschen); sonst laufen Einheiten aus der Zone oder Reihen kippen nach vorn."""
+        if fr is None:
+            return dict(finals)
+        out = {}
+        ahead = back = side = 0
+        for uid, p in finals.items():
+            d, l = fr.depth(p), fr.lateral(p)
+            if d > fr.front + self.DEPLOY_FRONT_M:
+                d = fr.front + self.DEPLOY_FRONT_M
+                ahead += 1
+            if d < fr.rear - self.DEPLOY_MAX_M:
+                d = fr.rear - self.DEPLOY_MAX_M
+                back += 1
+            if l < fr.left - self.DEPLOY_SIDE_M or l > fr.right_edge + self.DEPLOY_SIDE_M:
+                l = min(max(l, fr.left - self.DEPLOY_SIDE_M), fr.right_edge + self.DEPLOY_SIDE_M)
+                side += 1
+            out[uid] = fr.point(d, l)
+        if ahead:
+            self.plan_warnings.append(f"deployment group '{name}': {ahead} target(s) lay beyond your front line towards "
+                                      "the enemy and were pulled back to it")
+        if back:
+            self.plan_warnings.append(f"deployment group '{name}': {back} target(s) lay more than {self.DEPLOY_MAX_M:.0f} m "
+                                      "behind your rearmost units and were moved forward")
+        if side:
+            self.plan_warnings.append(f"deployment group '{name}': {side} target(s) lay more than {self.DEPLOY_SIDE_M:.0f} m "
+                                      "beyond your outer wings and were moved inwards")
+        return out
 
     @staticmethod
     def _formation(units: list[Unit], c: tuple[float, float], face: float, shape: str, gap: float) -> dict[int, tuple[float, float]]:

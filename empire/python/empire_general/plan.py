@@ -48,6 +48,14 @@ class GroupOrder(BaseModel):
                                    "attacks target_unit (infantry and artillery fire at it, cavalry charges it); "
                                    "halt = stop where they are; withdraw = leave the battlefield (game order)")
     target_point: list[float] | None = Field(default=None, description="move: [x, z] centre of the line / head of the column")
+    ref: str | None = Field(default=None, description="move: place the group relative to the army instead of target_point: "
+                                                      "'front' (your current front line), 'rear' (your rearmost units) or a "
+                                                      "unit name / id; None = use target_point")
+    back_m: float = Field(default=0.0, description="move with ref: metres behind the reference (away from the enemy); negative = towards the enemy")
+    right_m: float = Field(default=0.0, description="move with ref: metres to the right as the army faces the enemy; negative = left. "
+                                                    "With a unit as ref measured from that unit's side edge")
+    attach: Literal["centre", "left_end", "right_end"] = Field(default="centre", description="move with ref: which point "
+                                                               "of the group's line is put at the reference point")
     facing_deg: float | None = Field(default=None, description="move: direction the front faces on arrival (0 = north, 90 = east); "
                                                                "omitted = towards the enemy army")
     shape: Literal["line", "column", "none"] = Field(default="line", description="move: line = side by side across facing_deg, "
@@ -107,7 +115,14 @@ class WireGroup(BaseModel):
     name: str = Field(description="short label, e.g. 'centre line'")
     unit_ids: list[int] = Field(description="your unit ids (order does not matter: each unit gets the slot nearest to where it stands)")
     task: Literal["move", "attack", "halt", "withdraw"]
-    target_point: list[float] = Field(description="move: [x, z] centre of the line / head of the column; otherwise []")
+    target_point: list[float] = Field(description="move with ref 'absolute': [x, z] centre of the line / head of the column; otherwise []")
+    ref: str = Field(description="move: 'front', 'rear' or a unit name like 'Artillerie 1' = place the group relative "
+                                 "to it with back_m/right_m/attach (preferred); 'absolute' = use target_point; otherwise 'absolute'")
+    back_m: float = Field(description="move with ref: metres behind the reference, away from the enemy (negative = towards the enemy); otherwise 0")
+    right_m: float = Field(description="move with ref: metres to the right as your army faces the enemy (negative = left); "
+                                       "with a unit as ref measured from that unit's side edge (e.g. -5 = 5 m gap on its left); otherwise 0")
+    attach: Literal["centre", "left_end", "right_end"] = Field(description="move with ref: which point of the group's "
+                                                                           "line is put at the reference point")
     facing_deg: float = Field(description="move: front direction on arrival, 0 = north, 90 = east; -1 = towards the enemy army")
     shape: Literal["line", "column", "none"]
     spacing_m: float = Field(description="move: gap between units in a line / distance in a column, e.g. 6")
@@ -149,6 +164,8 @@ def to_plan(w: WirePlan) -> Plan:
                 order=ReflexOrder(type=o.type, distance_m=o.distance_m or None, target_point=_pt(o.target_point), run=o.run)))
         groups.append(GroupOrder(
             name=g.name, unit_ids=g.unit_ids, task=g.task, target_point=_pt(g.target_point),
+            ref=None if g.ref.strip().lower() in ("", "absolute", "none") else g.ref.strip(),
+            back_m=g.back_m, right_m=g.right_m, attach=g.attach,
             facing_deg=None if g.facing_deg < 0 else g.facing_deg % 360, shape=g.shape,
             spacing_m=g.spacing_m if g.spacing_m > 0 else 6.0,
             waypoints=[p for p in (_pt(x) for x in g.waypoints) if p] or None,

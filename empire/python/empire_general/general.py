@@ -39,6 +39,7 @@ to put certain units on a wing, give them their own group and target_point), "co
 (the foremost unit leads), "none" = each unit goes to target_point itself. spacing_m = gap between neighbouring units. \
 facing_deg -1 = towards the enemy army. waypoints = points to pass first (a flank march). Units on the move \
 face the way they march; a line forms when they arrive.
+  Placing groups relative to your army (preferred, especially for deployment - no sign errors): set ref and leave target_point []. The army frame: "forward" = towards the enemy army, "behind" = away from it, "right"/"left" as your troops see it facing the enemy. ref "front" = the centre of your current front line (your foremost units), ref "rear" = your rearmost units, or ref = a unit name from the report (e.g. "Artillerie 1", also one you move in this same plan: then its new place counts). back_m = metres behind the reference (negative = in front of it), right_m = metres to the right (negative = left); with a unit as ref, right_m is measured from that unit's side edge. attach = which point of this group's line is put at that point: "centre", "left_end" or "right_end". Examples: second line 60 m behind the front: ref "front", back_m 60, right_m 0, attach "centre". Infantry directly left of "Artillerie 1" with a 5 m gap: ref "Artillerie 1", back_m 0, right_m -5, attach "right_end" (the group's right end touches the gap). The same on the right: right_m 5, attach "left_end". Reserve 40 m behind "Infanterie 2": ref "Infanterie 2", back_m 40, right_m 0. ref "absolute" = use target_point [x, z]. Each unit's frontage (width of its line) is in the report; a line is as wide as the sum of its units' frontages plus the gaps.
 - attack: every unit of the group attacks target_unit: infantry and artillery move into range and fire at it, \
 cavalry charges it. run=true for a charge. Changing a target cancels a charge in progress, so keep targets \
 steady. on_target_lost: "nearest" (default) = attack the nearest enemy when the target breaks, "halt" = stop.
@@ -55,7 +56,9 @@ optionally only enemy_units), routed (side ally/enemy), arrived, after (seconds)
 set it off), fall_back (distance_m), hold, move (target_point). Each fires once and holds until your next plan. \
 Use the PREDICTED section to set them up before contact.
 
-Answer format: every field of every group is required. For fields that do not apply use 0 (numbers), -1 \n(facing_deg = towards the enemy), [] (lists and points), "none" (side) or "unchanged" (fire_at_will, skirmish).
+Answer format: every field of every group is required. For fields that do not apply use 0 (numbers), -1 \
+(facing_deg = towards the enemy), [] (lists and points), "absolute" (ref, when not used), "centre" (attach), \
+"none" (side) or "unchanged" (fire_at_will, skirmish).
 
 Note (required): end every plan with a short note to yourself - your next plans see your last notes, earlier \
 reports are not kept. Write what you are trying and what the enemy keeps doing.
@@ -66,7 +69,7 @@ hits the side or rear.
 
 Limits of your command (do not plan or promise these, they cannot be ordered): the artillery's ammunition type \
 (round shot, canister, shell) and the infantry's formation type (square, column, fire by rank) are chosen by the \
-game's own unit behaviour. Artillery firing at a target automatically ceases fire while your own units are within \
+game's own unit behaviour. The terrain (hills, woods, rivers) is not reported - only the ground height under each unit; a "hill crest" can only be estimated from those heights. Artillery firing at a target automatically ceases fire while your own units are within \
 50 m of that target, and resumes when they are clear.\
 """
 

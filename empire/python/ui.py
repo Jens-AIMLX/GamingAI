@@ -23,6 +23,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, simpledialog, ttk
@@ -489,7 +490,9 @@ class App(tk.Tk):
         frm.columnconfigure(0, weight=1)
         frm.rowconfigure(1, weight=1)
         frm.rowconfigure(3, weight=1)
-        status = ttk.Label(frm, text=f"Analysiere mit {model} … (dauert etwa 10–30 s)", foreground="#1a7f37")
+        situation = self._situation(kind)
+        live = "mit Lagebild der laufenden Schlacht" if situation else "ohne Lagebild (keine Schlacht läuft)"
+        status = ttk.Label(frm, text=f"Analysiere mit {model}, {live} … (dauert etwa 10–30 s)", foreground="#1a7f37")
         status.grid(row=0, column=0, sticky="w")
         ana = tk.Text(frm, height=12, wrap="word", font=("Segoe UI", 9), background="#f6f6f6")
         ana.grid(row=1, column=0, sticky="nsew", pady=(4, 8))
@@ -534,7 +537,7 @@ class App(tk.Tk):
                 scope = ("alle Zeilen geprüft" if full or baseline is None else
                          f"{res.protected} Zeilen geschützt (unverändert seit der letzten Überarbeitung), "
                          f"{res.open} neue/geänderte geprüft")
-                status.config(text=f"Fertig ({model}) – {scope}.", foreground="#1a7f37")
+                status.config(text=f"Fertig ({model}, {live}) – {scope}.", foreground="#1a7f37")
                 diff = []
                 for old, new in res.changes:
                     if not old:
@@ -553,13 +556,31 @@ class App(tk.Tk):
         def run():
             try:
                 from empire_general.prompt_eval import review_lines
-                res = review_lines(kind, text, baseline, api_key=key, model=model)
+                res = review_lines(kind, text, baseline, api_key=key, model=model, situation=situation)
                 self.calls.put(lambda: done(res, None))
             except Exception as e:  # Anzeige im Dialog
                 msg = str(e).replace(key, "<Schlüssel>")
                 self.calls.put(lambda: done(None, msg))
 
         threading.Thread(target=run, daemon=True).start()
+
+    def _situation(self, kind: str) -> str:
+        """Lagebild aus runtime/roster.json, wenn der Feldherr laeuft und die Liste frisch ist. Befehle/Aufstellung
+        fuer den Spieler -> Armee des Spielers, Befehle fuer den Gegner -> gegnerische Armee, Strategie -> beide."""
+        if not (self.proc and self.proc.poll() is None):
+            return ""
+        path = RUNTIME / "roster.json"
+        try:
+            if time.time() - path.stat().st_mtime > 15:
+                return ""
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return ""
+        sit = data.get("situation") or {}
+        player = str(data.get("player_alliance") or 1)
+        others = [a for a in sit if a != player]
+        keys = [player] if kind in ("orders_player", "deploy") else (others if kind == "orders_enemy" else [player] + others)
+        return "\n\n".join(sit[a] for a in keys if sit.get(a))
 
     # ---------- Sichern ----------
     def _schedule_save(self) -> None:
