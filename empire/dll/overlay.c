@@ -84,6 +84,59 @@ static void read_config(void)
 
 typedef struct { float x, y, z, rhw; DWORD c; } Vtx;
 
+/* ---------- Meldungen des Feldherrn (ai_bridge/overlay.txt, siehe python/empire_general/overlay_feed.py) ---------- */
+#define FEED_MAX 14
+#define FEED_LEN 200
+static wchar_t g_lines[FEED_MAX][FEED_LEN];
+static wchar_t g_kinds[FEED_MAX];
+static int g_nlines;
+static DWORD g_feed_tick;
+
+static void read_feed(void)
+{
+	DWORD now = GetTickCount();
+	if (now - g_feed_tick < 1000) return;
+	g_feed_tick = now;
+	FILE *f = fopen("ai_bridge\\overlay.txt", "rb");
+	if (!f) return;                       /* fehlt oder wird gerade ersetzt - alte Zeilen bleiben stehen */
+	static char raw[8192];
+	static wchar_t wide[8192];
+	size_t n = fread(raw, 1, sizeof raw - 1, f);
+	fclose(f);
+	raw[n] = 0;
+	int wn = MultiByteToWideChar(CP_UTF8, 0, raw, (int)n, wide, (int)(sizeof wide / sizeof wide[0]) - 1);
+	if (wn <= 0) return;
+	wide[wn] = 0;
+	int count = 0;
+	wchar_t *p = wide;
+	if (p[0] == 0xFEFF) p++;              /* BOM */
+	while (*p && count < FEED_MAX) {
+		wchar_t *e = wcschr(p, L'\n');
+		size_t len = e ? (size_t)(e - p) : wcslen(p);
+		if (len && p[len - 1] == L'\r') len--;
+		if (len > 1) {
+			g_kinds[count] = p[0];
+			size_t m = len - 1 < FEED_LEN - 1 ? len - 1 : FEED_LEN - 1;
+			wcsncpy(g_lines[count], p + 1, m);
+			g_lines[count][m] = 0;
+			count++;
+		}
+		if (!e) break;
+		p = e + 1;
+	}
+	g_nlines = count;
+}
+
+static D3DCOLOR kind_color(wchar_t k)
+{
+	switch (k) {
+	case L'>': return D3DCOLOR_ARGB(255, 150, 200, 255);   /* eigener Befehl */
+	case L'*': return D3DCOLOR_ARGB(255, 245, 238, 220);   /* Antwort des Feldherrn */
+	case L'!': return D3DCOLOR_ARGB(255, 255, 170, 80);    /* Warnung */
+	default:   return D3DCOLOR_ARGB(255, 175, 175, 175);   /* Hinweis */
+	}
+}
+
 static void draw(IDirect3DDevice9 *dev)
 {
 	if (dev != g_dev) {                    /* erstes Bild oder anderes Geraet */
@@ -91,14 +144,18 @@ static void draw(IDirect3DDevice9 *dev)
 		g_dev = dev;
 	}
 	if (!g_font && g_createfont)
-		g_createfont(dev, 18, 0, FW_SEMIBOLD, 1, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
+		g_createfont(dev, 17, 0, FW_SEMIBOLD, 1, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
 		             DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI", &g_font);
 	if (!g_sb) IDirect3DDevice9_CreateStateBlock(dev, D3DSBT_ALL, &g_sb);
 	if (!g_sb) return;
+	read_feed();
 
 	D3DVIEWPORT9 vp;
 	IDirect3DDevice9_GetViewport(dev, &vp);
-	float w = 360.0f, h = 46.0f;
+	const float line_h = 21.0f, title_h = 26.0f;
+	int n = g_nlines ? g_nlines : 1;
+	float w = 640.0f, h = title_h + n * line_h + 10.0f;
+	if (w > (float)vp.Width - 28.0f) w = (float)vp.Width - 28.0f;
 	float x0 = (float)vp.X + 14.0f, y0 = (float)(vp.Y + vp.Height) - h - 180.0f;   /* ueber der Einheitenleiste */
 
 	IDirect3DStateBlock9_Capture(g_sb);
@@ -129,9 +186,19 @@ static void draw(IDirect3DDevice9 *dev)
 	IDirect3DDevice9_DrawPrimitiveUP(dev, D3DPT_TRIANGLESTRIP, 2, bar, sizeof(Vtx));
 
 	if (g_font) {
-		RECT r = { (LONG)x0 + 14, (LONG)y0 + 4, (LONG)(x0 + w) - 8, (LONG)(y0 + h) - 4 };
-		g_font->v->DrawTextW(g_font, NULL, L"Empire Battle AI \x2013 Overlay aktiv", -1, &r,
-		                     DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP, D3DCOLOR_ARGB(255, 235, 225, 200));
+		const DWORD fmt = DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOCLIP;
+		RECT r = { (LONG)x0 + 14, (LONG)y0 + 5, (LONG)(x0 + w) - 8, (LONG)(y0 + title_h) };
+		g_font->v->DrawTextW(g_font, NULL, L"Feldherr", -1, &r, fmt, D3DCOLOR_ARGB(255, 214, 178, 96));
+		if (!g_nlines) {
+			RECT q = { (LONG)x0 + 14, (LONG)(y0 + title_h), (LONG)(x0 + w) - 8, (LONG)(y0 + title_h + line_h) };
+			g_font->v->DrawTextW(g_font, NULL, L"Overlay aktiv \x2013 noch keine Meldungen des Feldherrn", -1, &q, fmt,
+			                     D3DCOLOR_ARGB(255, 175, 175, 175));
+		}
+		for (int i = 0; i < g_nlines; i++) {
+			RECT q = { (LONG)x0 + 14, (LONG)(y0 + title_h + i * line_h), (LONG)(x0 + w) - 8,
+			           (LONG)(y0 + title_h + (i + 1) * line_h) };
+			g_font->v->DrawTextW(g_font, NULL, g_lines[i], -1, &q, fmt, kind_color(g_kinds[i]));
+		}
 	}
 	IDirect3DStateBlock9_Apply(g_sb);
 	if (InterlockedIncrement(&g_draws) == 1)

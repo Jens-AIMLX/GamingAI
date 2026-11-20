@@ -35,6 +35,7 @@ from pathlib import Path
 
 from empire_bridge import EmpireBridge, Order
 from empire_general import firelanes
+from empire_general.overlay_feed import OverlayFeed
 from empire_general.describe import describe, describe_deployment, situation_summary
 from empire_general.executor import Executor
 from empire_general.general import General, load_text, make_general, system_prompt
@@ -361,11 +362,18 @@ def main() -> int:
     last_seq, last_time = -1, -1.0
     battle_over = False
     reported_grouped: set[int] = set()
+    feed = OverlayFeed(br.dir / "overlay.txt")       # Meldungen fuer das Overlay im Spielbild
+    feed.add("-", f"Feldherr gestartet ({args.model or args.backend}) - wartet auf eine Schlacht")
 
     def log(entry: dict) -> None:
         if logf:
             logf.write(json.dumps(entry, ensure_ascii=False) + "\n")
             logf.flush()
+        try:
+            bt = w.battle_time_at(entry["t"]) if w is not None and "t" in entry and w.battle_start is not None else None
+            feed.from_log(entry, (w.player_alliance or 1) if w is not None else 1, bt)
+        except Exception:
+            pass   # das Overlay darf den Feldherrn nie stoeren
         if entry["type"] == "plan":
             say(f"[{entry['t']:6.0f}s] Plan Allianz {entry['alliance']} ({entry['secs']} s): {entry['plan']['intent']}")
         elif entry["type"] == "deploy":
@@ -488,6 +496,7 @@ def main() -> int:
                 logf.close()
             logf = (logdir / time.strftime("battle_%Y%m%d_%H%M%S.jsonl")).open("w", encoding="utf-8")
             say("Neue Schlacht erkannt.")
+            feed.add("-", "Neue Schlacht erkannt - Feldherr bereit")
         w.update(st)
         grouped = {u.id for u in w.units.values() if u.grouped and not u.manual}
         if grouped - reported_grouped:
