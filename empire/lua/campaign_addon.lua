@@ -247,6 +247,20 @@ do
 				try("FactionDetails(enemy)", C.FactionDetails, enemy)
 				try("RetrieveFactionMilitaryForceLists(enemy, true)", C.RetrieveFactionMilitaryForceLists, enemy, true)
 			end
+			-- Probe 4: Rekrutierung (recruitment.luac), Forschung (technology_researching.luac), Bauten/Bau/Schaeden
+			-- (building_browser.luac: erst mit nil, dann ueber das Feld region und NextAutoSettlementSelection)
+			try("ReviewPanelInfo()", C.ReviewPanelInfo)
+			local unis = try("FactionsUniversities(key)", C.FactionsUniversities, key)
+			if type(unis) == "table" and type(unis[1]) == "table" and unis[1].Address ~= nil then
+				try("UniversityResearching(unis[1].Address)", C.UniversityResearching, unis[1].Address)
+			end
+			local bb = try("BuildingBrowserDetails(nil)", C.BuildingBrowserDetails, nil)
+			if type(bb) == "table" and bb.region ~= nil then
+				local nxt = try("NextAutoSettlementSelection(bb.region)", C.NextAutoSettlementSelection, bb.region)
+				if nxt ~= nil then
+					try("BuildingBrowserDetails(next)", C.BuildingBrowserDetails, nxt)
+				end
+			end
 			outf:write("== Ende der Lese-Probe ==\n")
 			outf:close()
 			prog:close()
