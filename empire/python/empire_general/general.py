@@ -100,7 +100,8 @@ def system_prompt(rules: str = "", strategy: str = "", orders: str = "", role: s
         out += ("\n\nORDERS FROM YOUR SOVEREIGN for this battle - BINDING. Follow them to the letter and put them above "
                 "the strategy advice and above your own judgement of the situation (also when you are much stronger). "
                 "Deviate only when following them would clearly lose the battle, and then say so in your note. "
-                "Respect time limits in them (\"for the first N minutes\") using the TIME in each report:\n"
+                "Times in them (\"for the first N minutes\", \"0 to 1800 s\", \"from 1800 s\") count from the start of "
+                "the battle: measure them only with the BATTLE TIME in each report:\n"
                 + orders.strip())
     if rule_lines(rules):
         out += ("\n\nGAME RULES: facts about the game and hard rules of your command. Break one only when the battle "

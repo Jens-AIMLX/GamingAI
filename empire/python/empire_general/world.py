@@ -121,6 +121,7 @@ class World:
     player_alliance: int | None = None
     control: str = "enemy"
     controlled_alliances: list[int] = field(default_factory=list)
+    battle_start: float | None = None   # Spieluhr bei Schlachtbeginn (erste Phase "Deployed")
     units: dict[int, Unit] = field(default_factory=dict)
     by_bid: dict[str, Unit] = field(default_factory=dict)
     order_results: list[dict] = field(default_factory=list)
@@ -131,6 +132,8 @@ class World:
     def update(self, st: dict) -> None:
         self.time = float(st.get("game_time") or 0.0)
         self.phase = st.get("phase") or "?"
+        if self.phase == "Deployed" and self.battle_start is None:
+            self.battle_start = self.time
         self.seq = int(st.get("seq") or 0)
         self.player_alliance = st.get("player_alliance")
         self.control = st.get("control") or "enemy"
@@ -227,6 +230,15 @@ class World:
         side = "rechts" if lat > 40 else ("links" if lat < -40 else "Mitte")
         depth = "vorn" if dep > 30 else ("hinten" if dep < -30 else "")
         return f"{side} {depth}".strip()
+
+    @property
+    def battle_time(self) -> float:
+        """Sekunden seit Schlachtbeginn. Die Spieluhr (game_time) laeuft seit dem Start des Spiels weiter und taugt
+        nicht fuer Phasen wie '0 bis 1800 s' (Schlacht 2026-11-20: TIME 24110 s -> Phase 2 sofort)."""
+        return 0.0 if self.battle_start is None else max(0.0, self.time - self.battle_start)
+
+    def battle_time_at(self, t: float) -> float:
+        return 0.0 if self.battle_start is None else max(0.0, t - self.battle_start)
 
     # ---------- Sichten ----------
     def wanted_alliances(self) -> list[int]:

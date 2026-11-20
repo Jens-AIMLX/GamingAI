@@ -465,7 +465,7 @@ def main() -> int:
             continue
         if w.phase == "Complete":
             battle_over = True
-            say(f"Schlacht beendet nach {w.time:.0f} s. Plaene: " + ", ".join(f"Allianz {a}: {s.plans}" for a, s in sides.items()))
+            say(f"Schlacht beendet nach {w.battle_time:.0f} s Schlachtzeit. Plaene: " + ", ".join(f"Allianz {a}: {s.plans}" for a, s in sides.items()))
             if args.once:
                 break
             continue

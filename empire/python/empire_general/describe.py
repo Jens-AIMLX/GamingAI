@@ -116,7 +116,8 @@ def describe(w: World, alliance: int, *, previous: Plan | None, notes: list[str]
     foes = sorted(w.enemies(alliance, alive=False), key=lambda u: u.id)
     mine_alive = [u for u in mine if u.alive]
     foes_alive = [u for u in foes if u.alive]
-    lines = [f"TIME {w.time:.0f} s, phase {w.phase}. You command alliance {alliance}."]
+    lines = [f"BATTLE TIME {w.battle_time:.0f} s since the battle started (phase {w.phase}). "
+             f"You command alliance {alliance}."]
     if immediate:
         lines.append("")
         lines.append("IMMEDIATE ORDERS FROM YOUR SOVEREIGN (given during the battle - top priority, carry them out NOW "
@@ -125,7 +126,7 @@ def describe(w: World, alliance: int, *, previous: Plan | None, notes: list[str]
                      "the positions in the lists below, left/right as seen by your army facing the enemy). Start your "
                      "intent with a one-line acknowledgement in German of how you carry out the newest order:")
         for t0, text in immediate:
-            lines.append(f"  - at {t0:.0f} s ({w.time - t0:.0f} s ago): {text}")
+            lines.append(f"  - at battle time {w.battle_time_at(t0):.0f} s ({w.time - t0:.0f} s ago): {text}")
         lines.append("")
     cm, ce = centroid(mine_alive), centroid(foes_alive)
     if cm and ce:
@@ -206,7 +207,7 @@ def situation_summary(w: World, alliance: int) -> str:
         return ""
     fr = w.frame(alliance)
     who = "the PLAYER'S army" if alliance == (w.player_alliance or 1) else "the ENEMY army (the player's opponent)"
-    lines = [f"Alliance {alliance} = {who}; phase {w.phase}, time {w.time:.0f} s. "
+    lines = [f"Alliance {alliance} = {who}; phase {w.phase}, battle time {w.battle_time:.0f} s. "
              f"{len([u for u in mine if u.alive])} units, {sum(u.men for u in mine)} men."]
     if fr is not None:
         widths = [fr.lateral(u.pos) for u in mine if u.alive]
