@@ -260,6 +260,37 @@ do
 				if nxt ~= nil then
 					try("BuildingBrowserDetails(next)", C.BuildingBrowserDetails, nxt)
 				end
+				-- Probe 5: Gebaeudedetails eines belegten Slots (Schaden/Bau?) in beiden Reihenfolgen der UI-Skripte,
+				-- danach ein voller Umlauf ueber alle Siedlungen (nur Zaehler und Zeit, keine Ausgabe der Inhalte)
+				local s
+				for _, slot in pairs(bb.slots or {}) do
+					if type(slot) == "table" and slot.building_key and slot.building_key ~= "empty" then s = slot; break end
+				end
+				if s then
+					outf:write("-- Slot fuer Gebaeudedetails: " .. tostring(s.building_key) .. " / " .. tostring(s.slot_key) .. "\n")
+					try("BuildingDetails(building, region, faction, slot)", C.BuildingDetails,
+					    s.building_key, s.region_key, s.faction_key, s.slot_key)
+					try("BuildingDetails(building, faction, region, slot)", C.BuildingDetails,
+					    s.building_key, s.faction_key, s.region_key, s.slot_key)
+				end
+				try("Umlauf aller Siedlungen", function()
+					local t0 = os.clock()
+					local first, cur, n, slots, empty, names = bb.region, bb.region, 0, 0, 0, {}
+					repeat
+						local d = C.BuildingBrowserDetails(cur)
+						n = n + 1
+						if type(d) == "table" then
+							names[#names + 1] = tostring(d.region_name)
+							for _, sl in pairs(d.slots or {}) do
+								slots = slots + 1
+								if type(sl) == "table" and sl.building_key == "empty" then empty = empty + 1 end
+							end
+						end
+						cur = C.NextAutoSettlementSelection(cur)
+					until cur == nil or cur == first or n >= 300
+					return { Regionen = n, Slots = slots, LeereSlots = empty, Sekunden = os.clock() - t0,
+					         ZurueckAmAnfang = (cur == first), Namen = table.concat(names, ", ") }
+				end)
 			end
 			outf:write("== Ende der Lese-Probe ==\n")
 			outf:close()
