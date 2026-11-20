@@ -110,7 +110,7 @@ do
 			table.sort(ks, function(a, b) return tostring(a) < tostring(b) end)
 			out[#out + 1] = indent .. "{ " .. #ks .. " Eintraege"
 			for i, k in ipairs(ks) do
-				if i > 25 then out[#out + 1] = indent .. "  ... (" .. (#ks - 25) .. " weitere)"; break end
+				if i > 60 then out[#out + 1] = indent .. "  ... (" .. (#ks - 60) .. " weitere)"; break end
 				local val = v[k]
 				if type(val) == "table" and depth > 0 then
 					out[#out + 1] = indent .. "  [" .. tostring(k) .. "] ="
@@ -171,7 +171,23 @@ do
 				local out = { "-- " .. label .. ": " .. (res[1] and ("ok, " .. (#res - 1) .. " Rueckgabe(n)")
 				                                          or ("FEHLER " .. tostring(res[2]))) }
 				if res[1] then
-					for i = 2, #res do pcall(dump, res[i], 3, {}, "  ", out, { 400 }) end
+					for i = 2, #res do
+						local v = res[i]
+						if type(v) == "table" then             -- alle Feldnamen vollstaendig, unabhaengig vom Limit
+							local ks = {}
+							for kk in pairs(v) do ks[#ks + 1] = tostring(kk) end
+							table.sort(ks)
+							out[#out + 1] = "  Felder (" .. #ks .. "): " .. table.concat(ks, ", ")
+							local first = v[1]
+							if type(first) == "table" then
+								local fk = {}
+								for kk in pairs(first) do fk[#fk + 1] = tostring(kk) end
+								table.sort(fk)
+								out[#out + 1] = "  Felder je Eintrag (" .. #fk .. "): " .. table.concat(fk, ", ")
+							end
+						end
+						pcall(dump, v, 3, {}, "  ", out, { 1500 })
+					end
 				end
 				outf:write(table.concat(out, "\n"), "\n")
 				outf:flush()
