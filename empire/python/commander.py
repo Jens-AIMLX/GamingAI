@@ -19,8 +19,11 @@ Dieselben Befehle nimmt der Feldherr aus <Spielordner>/ai_bridge/commands.txt (e
 sel_player) - so loesen die Buttons des Steuerpults sie aus.
 
 Ablauf (nach rome-battle-ai): der Executor laeuft jede Sekunde (Bruecken-Takt) ohne Modell; der Feldherr
-plant im Hintergrund neu, alle --interval Sekunden Spielzeit (--close-interval, sobald Armeen < 250 m
-voneinander stehen), wenn sich etwas geaendert hat.
+plant im Hintergrund neu - fruehestens alle --interval Sekunden Spielzeit (--close-interval, sobald Armeen
+< 250 m voneinander stehen) und nur bei einem Ereignis (Verluste, gebrochene Einheiten, Abstandsstufe,
+Feindbewegung, Befehlsfehler, Reflex, erledigte Bewegungen), sonst spaetestens nach dem dreifachen Intervall.
+Fuehrt die KI keine einzige Einheit (alle beim Spieler), ruht die Planung bis zur Rueckgabe oder einem Befehl.
+Der Bericht hat einen festen Teil je Schlacht (Leseanleitung + Stammdaten, Prompt-Cache) und eine kurze Lage.
 """
 from __future__ import annotations
 
@@ -36,7 +39,7 @@ from pathlib import Path
 from empire_bridge import EmpireBridge, Order
 from empire_general import firelanes
 from empire_general.overlay_feed import OverlayFeed
-from empire_general.describe import describe, describe_deployment, situation_summary
+from empire_general.describe import battle_static, describe, describe_deployment, situation_summary
 from empire_general.executor import Executor
 from empire_general.general import General, load_text, make_general, system_prompt
 from empire_general.plan import Plan
@@ -195,6 +198,11 @@ def write_roster(path: Path, w: World, sides: dict) -> None:
 
 
 HANDOVER_WINDOW_S = 60.0   # so lange nach einem Chat-Befehl duerfen Plaene Einheiten uebergeben
+# Neu planen nur bei einem Ereignis (sonst spaetestens nach 3 x Intervall) - Token sparen, Schlacht 2026-11-20 15:04:
+# 333 Plaene in 24 min, fast alle "weiter so". Reflexe des Executors decken die Zeit dazwischen ab.
+DISTANCE_BANDS_M = (80.0, 150.0, 250.0, 400.0, 600.0)
+LOSS_EVENT_MEN, LOSS_EVENT_FRAC = 20, 0.03
+ENEMY_MOVE_EVENT_M = 60.0
 
 
 class Side:
@@ -232,14 +240,62 @@ class Side:
         self.handover_since: float | None = None
         self.handover_done: set[int] = set()
         self.ready_handover: tuple[list[int], list[int]] | None = None
+        # fester Teil des Berichts (Leseanleitung + Stammdaten) - einmal je Schlacht, kommt aus dem Prompt-Cache
+        self.static: str | None = None
+        self.static_ids: set[int] = set()
+        # Stand beim letzten Plan - fuer die Ereignis-Erkennung
+        self.last_alive: set[int] = set()
+        self.last_band = -1
+        self.last_errors = 0
+        self.last_fired = 0
+        self.last_togo = 0
+        self.plan_reason = ""
+        self.idle_noted = False
 
-    def changed(self, w: World) -> bool:
+    def ai_units(self, w: World) -> list:
+        """Eigene Einheiten, die die KI gerade fuehrt (nicht beim Spieler, nicht in einer Spielergruppe)."""
+        return [u for u in w.side(self.alliance) if not u.manual and not u.grouped]
+
+    def new_order(self) -> bool:
+        return bool(self.pending_acks) or any(t > self.last_plan_t for t, _ in self.immediate)
+
+    def _band(self, w: World) -> int:
+        foes = w.enemies(self.alliance)
+        d = min((dist(u.pos, f.pos) for u in w.side(self.alliance) for f in foes), default=1e9)
+        return sum(1 for b in DISTANCE_BANDS_M if d > b)
+
+    def _counts(self, w: World) -> tuple[int, int]:
+        tasks = self.ex.tasks(w)
+        togo = sum(1 for t in tasks.values() if "m to go" in t)
+        fired = sum(1 for r in self.ex.reflex_status() if r.endswith("FIRED"))
+        return togo, fired
+
+    def event(self, w: World) -> str | None:
+        """Was hat sich seit dem letzten Plan so geaendert, dass ein neuer Plan lohnt? None = nichts."""
         if self.last_men is None:
-            return True
+            return "erste Lage"
         men = (w.men_total(self.alliance), w.men_total(self.alliance, enemy=True))
-        if men != self.last_men:
-            return True
-        return any(dist(u.pos, self.last_pos.get(u.id, u.pos)) > 20 for u in w.units.values())
+        for i, who in ((0, "eigene"), (1, "gegnerische")):
+            lost = self.last_men[i] - men[i]
+            if lost >= max(LOSS_EVENT_MEN, LOSS_EVENT_FRAC * self.last_men[i]):
+                return f"{who} Verluste {lost} Mann"
+        alive = {u.id for u in w.units.values() if u.alive}
+        if alive != self.last_alive:
+            return "Einheit gebrochen/vernichtet/neu"
+        band = self._band(w)
+        if band != self.last_band:
+            return "Abstand der Armeen " + ("kleiner" if band < self.last_band else "groesser")
+        if len(self.ex.errors) > self.last_errors:
+            return "Befehlsfehler"
+        togo, fired = self._counts(w)
+        if fired > self.last_fired:
+            return "Reflex ausgeloest"
+        if self.last_togo and not togo:
+            return "Bewegungen abgeschlossen"
+        for f in w.enemies(self.alliance):
+            if dist(f.pos, self.last_pos.get(f.id, f.pos)) > ENEMY_MOVE_EVENT_M:
+                return f"Feind bewegt ({f.name})"
+        return None
 
     def _run(self, kind: str, fn, report: str, t_game: float) -> None:
         # Welche Chat-Befehle kennt dieser Plan? Nur ein Plan, dessen Bericht den Befehl schon enthielt, darf ihn
@@ -247,7 +303,11 @@ class Side:
         # als Antwort gezeigt). -1 = kein Befehl im Bericht.
         seen = max((t for t, _ in self.immediate), default=-1e9) if kind == "plan" else -1e9
         self.busy = True
-        self.log({"type": "report" if kind == "plan" else "deploy_report", "alliance": self.alliance, "t": t_game, "text": report})
+        entry = {"type": "report" if kind == "plan" else "deploy_report", "alliance": self.alliance, "t": t_game,
+                 "text": report}
+        if kind == "plan":
+            entry["reason"] = self.plan_reason
+        self.log(entry)
 
         def run():
             t0 = time.monotonic()
@@ -285,6 +345,10 @@ class Side:
         threading.Thread(target=run, daemon=True).start()
 
     def start_plan(self, w: World) -> None:
+        if self.static is None:                 # einmal je Schlacht: fester Teil fuer den Prompt-Cache
+            self.static = battle_static(w, self.alliance)
+            self.static_ids = {u.id for u in w.units.values()}
+            self.log({"type": "report_static", "alliance": self.alliance, "t": w.time, "text": self.static})
         men = (w.men_total(self.alliance), w.men_total(self.alliance, enemy=True))
         losses = None
         if self.last_men:
@@ -292,13 +356,19 @@ class Side:
         report = describe(w, self.alliance, previous=self.ex.plan, notes=self.notes, tasks=self.ex.tasks(w),
                           reflex_status=self.ex.reflex_status(), losses=losses,
                           errors=self.ex.errors[-5:] + self.ex.plan_warnings, immediate=self.immediate,
-                          lanes=self.ex.lanes if self.ex.plan is not None else None, gun_zone=self.ex.gun_zone_m)
+                          lanes=self.ex.lanes if self.ex.plan is not None else None, gun_zone=self.ex.gun_zone_m,
+                          known=self.static_ids)
         self.last_men = men
         self.last_pos = {u.id: u.pos for u in w.units.values()}
+        self.last_alive = {u.id for u in w.units.values() if u.alive}
+        self.last_band = self._band(w)
+        self.last_errors = len(self.ex.errors)
+        self.last_togo, self.last_fired = self._counts(w)
         self.last_plan_t = w.time
         self.force_plan = False
-        system = self.system_for(self.alliance)
-        self._run("plan", lambda r: self.general.plan(r, w, self.alliance, system), report, w.time)
+        self.idle_noted = False
+        system, static = self.system_for(self.alliance), self.static
+        self._run("plan", lambda r: self.general.plan(r, w, self.alliance, system, static), report, w.time)
 
     def start_deploy(self, w: World, deploy_orders: str) -> None:
         report = describe_deployment(w, self.alliance, deploy_orders)
@@ -312,7 +382,7 @@ def main() -> int:
     ap.add_argument("--backend", default="claude", choices=["claude", "rule"])
     ap.add_argument("--model", default=None, help="Claude-Modell (Standard claude-opus-5-5)")
     ap.add_argument("--effort", default="low", choices=["low", "medium", "high", "xhigh", "max"])
-    ap.add_argument("--interval", type=float, default=10.0, help="Sekunden Spielzeit zwischen Plaenen")
+    ap.add_argument("--interval", type=float, default=10.0, help="fruehestens so viele Sekunden Spielzeit zwischen Plaenen (spaetestens 3x)")
     ap.add_argument("--close-interval", type=float, default=5.0, help="... wenn die Armeen nah sind")
     ap.add_argument("--once", action="store_true", help="nach einer Schlacht beenden")
     ap.add_argument("--strategy", default=str(HERE / "strategies" / "standard.md"), help="Strategie-Datei (Spiegelstriche)")
@@ -618,13 +688,29 @@ def main() -> int:
 
             # normale Planung nur nach Schlachtbeginn
             if w.phase == "Deployed" and not s.busy:
+                if not s.ai_units(w) and not s.new_order():
+                    # die KI fuehrt keine Einheit (alle beim Spieler): nichts zu planen, bis Einheiten zurueckkommen
+                    # (Uebergabe setzt force_plan, die Einheiten sind dann wieder KI-gefuehrt) oder ein Befehl kommt
+                    if not s.idle_noted:
+                        s.idle_noted = True
+                        log({"type": "info", "t": w.time, "text": f"Allianz {a}: keine Einheit unter KI-Fuehrung - "
+                             "Planung ruht bis zur Rueckgabe oder einem neuen Befehl"})
+                    continue
                 foes = w.enemies(a)
                 cm, ce = centroid(w.side(a)), centroid(foes)
                 close = bool(cm and ce and min((dist(u.pos, f.pos) for u in w.side(a) for f in foes), default=1e9) < 250)
                 interval = args.close_interval if close else args.interval
-                due = w.time - s.last_plan_t >= interval
-                first = s.ex.plan is None and w.time - s.last_plan_t >= 3   # nach Fehler nicht sekuendlich wiederholen
-                if s.force_plan or first or (due and (s.changed(w) or w.time - s.last_plan_t >= 3 * interval)):
+                gap = w.time - s.last_plan_t
+                first = s.ex.plan is None and gap >= 3   # nach Fehler nicht sekuendlich wiederholen
+                reason = None
+                if s.force_plan:
+                    reason = "Befehl/Uebergabe"
+                elif first:
+                    reason = "erster Plan"
+                elif gap >= interval:   # fruehestens nach dem Intervall, und nur bei einem Ereignis ...
+                    reason = s.event(w) or ("spaetestens nach 3 x Intervall" if gap >= 3 * interval else None)
+                if reason:              # ... sonst spaetestens nach 3 x Intervall
+                    s.plan_reason = reason
                     s.start_plan(w)
         # Spieler-Einheiten im Schusskanal eigener Feldgeschuetze: verschieben kann die KI sie nicht - also melden
         for a, s in sides.items():

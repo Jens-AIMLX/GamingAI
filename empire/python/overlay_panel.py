@@ -477,7 +477,7 @@ def _menu(pt: Painter) -> None:
     for e in EFFORTS:
         x = pt.button(x, y, e, ("m_effort", e), accent=p.effort == e)
     y += 28
-    d.text((x0 + 10, y + 3), "Plan alle", font=font(11, True), fill=GOLD)
+    d.text((x0 + 10, y + 3), "Plan ≥", font=font(11, True), fill=GOLD)    # fruehestens alle (Ereignis-Planung)
     x = pt.button(x0 + 90, y, "\u2212", ("m_plan", -1))
     d.text((x + 2, y + 3), f"{p.plan_s} s", font=font(11), fill=TEXT)
     x = pt.button(x + 36, y, "+", ("m_plan", 1))

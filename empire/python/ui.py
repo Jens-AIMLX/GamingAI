@@ -225,7 +225,7 @@ class App(tk.Tk):
         ttk.Combobox(f, textvariable=self.effort_var, values=EFFORTS, state="readonly", width=8).grid(
             row=1, column=5, sticky="w", pady=(6, 0))
 
-        ttk.Label(f, text="Neuer Plan alle").grid(row=2, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(f, text="Neuer Plan frühestens alle").grid(row=2, column=0, sticky="w", pady=(6, 0))
         self.int_var = tk.IntVar(value=int(self.s["interval"]))
         self.cint_var = tk.IntVar(value=int(self.s["close_interval"]))
         tb = ttk.Frame(f)
@@ -233,7 +233,8 @@ class App(tk.Tk):
         ttk.Spinbox(tb, from_=3, to=60, textvariable=self.int_var, width=4).pack(side="left")
         ttk.Label(tb, text=" s Spielzeit, im Nahkampf alle ").pack(side="left")
         ttk.Spinbox(tb, from_=2, to=30, textvariable=self.cint_var, width=4).pack(side="left")
-        ttk.Label(tb, text=" s   (kürzer = reaktiver, aber mehr Aufrufe/Kosten)", foreground="#777").pack(side="left")
+        ttk.Label(tb, text=" s   (nur bei Ereignissen wie Verlusten, Annäherung, Feindbewegung, erledigten Zügen; "
+                           "sonst spätestens nach dem Dreifachen)", foreground="#777").pack(side="left")
         for v in (self.model_var, self.effort_var, self.int_var, self.cint_var):
             v.trace_add("write", lambda *a: self._schedule_save())
 
@@ -851,7 +852,7 @@ class App(tk.Tk):
         return overlay_panel.PanelData(
             tab=overlay_panel.TABS[self._ov_view - 1], running=bool(self.proc and self.proc.poll() is None),
             status=self.run_status.cget("text"), model=model, effort=self.effort_var.get(),
-            interval=f"Plan alle {self.int_var.get()}/{self.cint_var.get()} s", control=control,
+            interval=f"Plan ≥{self.int_var.get()}/{self.cint_var.get()} s", control=control,
             log=[l for l in log if l.strip()], orders_player=self.orders_player_text.get("1.0", "end-1c"),
             orders_enemy=self.orders_enemy_text.get("1.0", "end-1c"), strategy_name=self.strat_var.get(),
             strategy=self.strat_text.get("1.0", "end-1c"), deploy=self.deploy_text.get("1.0", "end-1c"),

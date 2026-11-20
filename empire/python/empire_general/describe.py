@@ -1,5 +1,9 @@
 """Lagebericht fuer den Feldherrn (eine Nachricht pro Plan). Kompakt, aber vollstaendig.
 
+Zwei Teile (Token sparen): battle_static() - Leseanleitung und Stammdaten jeder Einheit, fuer die ganze Schlacht
+byte-gleich und deshalb im Prompt-Cache (kostet beim Lesen 1/20) - und describe(), die kurze Lage je Plan, die
+sich auf die Stammdaten bezieht. Aufstellung und Lagebild fuer die Prompt-Pruefung bleiben ausfuehrlich (selten).
+
 Angelehnt an rome_ai/describe.py (rome-battle-ai, MIT). Enthaelt eine einfache Vorhersage:
 welche feindliche Einheit bei gleichbleibendem Kurs in den naechsten 30 s welche eigene erreicht.
 """
@@ -41,6 +45,81 @@ def _unit_line(w: World, u: Unit, foes: list[Unit], task: str | None = None, fr:
         n, d = w.nearest(u.pos, foes)
         if n:
             s += f" | nearest #{n.id} {n.role} {d:.0f} m {compass(bearing_to(u.pos, n.pos))}"
+    return s
+
+
+REPORT_GUIDE = """HOW TO READ YOUR SITUATION REPORTS (fixed for this battle):
+- The UNIT ROSTER below gives each unit's fixed data once: id, name, kind (role and game unit key), men at the \
+start and missile range. The situation reports refer to units by '#id name'.
+- A unit line in a report: '#id name: <men now> men (x,z) h<ground height m> face <deg> width <frontage m> \
+[<b> back, <r> right]', then the movement ('moving SE 3.1 m/s'; no movement note = standing still), state marks, \
+' | ' its current task from your plan, and ' | near #id <m> <direction>' = the nearest unit of the other side. \
+[b back, r right] is the position in your ARMY FRAME: metres behind your front line (negative = in front of it, \
+towards the enemy) and metres right of your army centre. Enemy lines have no frame position.
+- Marks: ROUTING, LEAVING, DESTROYED = broken units. PLAYER = commanded by your sovereign: do not give it orders; \
+if the sovereign hands it back to you (also with 'take everything back' / 'du \u00fcbernimmst wieder alles'), put it \
+into take_from_player. PLAYER GROUP = in a player group, not under your command: do not give it orders.
+- IMMEDIATE ORDERS FROM YOUR SOVEREIGN (when present) were given during the battle: top priority, carry them out \
+NOW and keep following them until done or replaced; units are named as in the roster, enemy units with 'gegn.'; \
+descriptions like 'the enemy guns on the left' refer to the positions in the report, left/right as seen by your \
+army facing the enemy. Start your intent with a one-line acknowledgement in German of how you carry out the \
+newest order.
+- POSITIONS NOW: resolve 'vordere/frontale/vorderste', 'hintere/hinterste', 'linke', 'rechte' ONLY with these \
+lists; values are metres relative to your front line (+ = in front of it towards the enemy) resp. right of centre.
+- LINES OF FIRE of your field guns: corridors ~{lane_w:.0f} m wide from the gun to its target - keep every unit OUT \
+of them, also on the way: route behind the guns or beside the corridor; the subordinate moves places and routes \
+out of them and a gun holds fire while own troops stand in its corridor; standing infantry within {screen:.0f} m in \
+front of a gun is fired over and does not count. 'band right_m a..b' = on your side, from the gun up to your \
+front, no unit may be placed with right_m in that band.
+- SAFETY ZONE: no unit of yours (also generals and reserves) may stand or pass closer than the given distance to \
+your own guns; the subordinate moves places that are too close."""
+
+
+def _roster_line(u: Unit) -> str:
+    s = f"#{u.id} {u.name} - {u.role} ({u.type}), {u.men_start} men at start"
+    if u.missile_range:
+        s += f", range {u.missile_range:.0f} m"
+    return s
+
+
+def battle_static(w: World, alliance: int) -> str:
+    """Fester Teil fuer die ganze Schlacht (Prompt-Cache): Leseanleitung + Stammdaten aller bekannten Einheiten.
+    Muss byte-gleich bleiben - deshalb nur einmal je Schlacht und Seite bilden."""
+    mine = sorted(w.side(alliance, alive=False), key=lambda u: u.id)
+    foes = sorted(w.enemies(alliance, alive=False), key=lambda u: u.id)
+    lines = [REPORT_GUIDE.format(lane_w=2 * firelanes.HALF_M, screen=firelanes.SCREEN_M), "",
+             f"UNIT ROSTER - you command alliance {alliance}.", "YOUR UNITS:"]
+    lines += ["  " + _roster_line(u) for u in mine]
+    lines.append("ENEMY UNITS:")
+    lines += ["  " + _roster_line(u) for u in foes]
+    return "\n".join(lines)
+
+
+def _brief_line(w: World, u: Unit, others: list[Unit], known: set[int], task: str | None = None,
+                fr: Frame | None = None) -> str:
+    """Kurze Lagezeile; die festen Daten stehen in den Stammdaten (battle_static)."""
+    s = f"#{u.id} {u.name}: {u.men} men ({u.x:.0f},{u.z:.0f}) h{u.y:.0f} face {u.bearing:.0f} " \
+        f"width {frontage_m(u.role, u.men):.0f} m"
+    if u.id not in known:                      # nach Schlachtbeginn hinzugekommen: Stammdaten hier
+        s += f" (new unit: {u.role}, {u.type}, {u.men_start} men at start"
+        s += f", range {u.missile_range:.0f} m)" if u.missile_range else ")"
+    if fr is not None:
+        s += f" [{fr.front - fr.depth(u.pos):.0f} back, {fr.lateral(u.pos):+.0f} right]"
+    if u.speed >= 0.5:
+        s += f" moving {compass(bearing_to((0, 0), (u.vx, u.vz)))} {u.speed:.1f} m/s"
+    for flag, mark in ((u.routing, "ROUTING"), (u.leaving, "LEAVING"), (u.men == 0, "DESTROYED")):
+        if flag:
+            s += " " + mark
+    if u.manual:
+        s += " PLAYER"
+    elif u.grouped:
+        s += " PLAYER GROUP"
+    if task:
+        s += f" | {task}"
+    if u.alive and others:
+        n, d = w.nearest(u.pos, others)
+        if n:
+            s += f" | near #{n.id} {d:.0f} m {compass(bearing_to(u.pos, n.pos))}"
     return s
 
 
@@ -152,8 +231,7 @@ def position_lines(w: World, alliance: int, fr: Frame | None) -> list[str]:
     vordere/hintere Kavallerie genau vertauscht)."""
     if fr is None:
         return []
-    out = ["POSITIONS NOW (resolve 'vordere/frontale/vorderste', 'hintere/hinterste', 'linke', 'rechte' ONLY with "
-           "these lists; positions relative to your front line, + = in front of it towards the enemy):"]
+    out = ["POSITIONS NOW:"]
     def tag(u: Unit) -> str:
         d = fr.depth(u.pos) - fr.front
         own = " [player]" if u.manual else ""
@@ -185,10 +263,7 @@ def lane_lines(w: World, alliance: int, ls: list) -> list[str]:
     """Schusskanaele der eigenen Feldgeschuetze und wer gerade darin steht."""
     if not ls:
         return []
-    out = [f"LINES OF FIRE of your field guns (corridors ~{2 * firelanes.HALF_M:.0f} m wide from the gun to its target - "
-           "keep every unit OUT of them, also on the way: route behind the guns or beside the corridor; the "
-           "subordinate moves places and routes out of them and a gun holds fire while own troops stand in its corridor; "
-           f"standing infantry within {firelanes.SCREEN_M:.0f} m in front of a gun is fired over and does not count):"]
+    out = ["LINES OF FIRE:"]
     for l in ls:
         inside = [u for u in w.side(alliance) if firelanes.blocking(u, l)]
         tgt = f"{l.target.name} (#{l.target.id})" if l.target else "?"
@@ -204,10 +279,9 @@ def lane_lines(w: World, alliance: int, ls: list) -> list[str]:
                 k = min(gun_back / max(fr.depth(l.end) - fr.depth(l.start), 1e-6), 1.0)
                 lat.append(fr.lateral((l.start[0] + (l.end[0] - l.start[0]) * k, l.start[1] + (l.end[1] - l.start[1]) * k)))
             lo, hi = min(lat) - firelanes.HALF_M, max(lat) + firelanes.HALF_M
-            line += (f" | on your side it covers right_m {lo:+.0f}..{hi:+.0f} from the gun ({gun_back:.0f} m behind your "
-                     "front) forward: no places there between the gun and the front")
+            line += f" | band right_m {lo:+.0f}..{hi:+.0f} from the gun ({gun_back:.0f} m behind your front) to the front"
             if lo < 0 < hi and gun_back > 0:
-                line += (f" (also ref 'front' with right_m 0 and back_m 0..{gun_back:.0f} is IN it)")
+                line += f" (ref 'front' with right_m 0 and back_m 0..{gun_back:.0f} is IN it)"
         out.append(line)
     return out
 
@@ -223,14 +297,15 @@ def zone_lines(w: World, alliance: int, fr, r: float) -> list[str]:
             where.append(f"{g.name} [{fr.front - fr.depth(g.pos):.0f} m behind your front, {fr.lateral(g.pos):+.0f} m right]")
         else:
             where.append(g.name)
-    return [f"SAFETY ZONE: no unit of yours (also generals and reserves) may stand or pass closer than {r:.0f} m to "
-            "your own guns: " + "; ".join(where) + ". The subordinate moves places that are too close."]
+    return [f"SAFETY ZONE {r:.0f} m around: " + "; ".join(where)]
 
 
 def describe(w: World, alliance: int, *, previous: Plan | None, notes: list[str], tasks: dict[int, str],
              reflex_status: list[str], losses: tuple[int, int] | None, errors: list[str],
              immediate: list[tuple[float, str]] | None = None, lanes: list | None = None,
-             gun_zone: float = 0.0) -> str:
+             gun_zone: float = 0.0, known: set[int] | None = None) -> str:
+    """Lage je Plan. known = Einheiten, deren Stammdaten im festen Teil (battle_static) stehen."""
+    known = known or set()
     mine = sorted(w.side(alliance, alive=False), key=lambda u: u.id)
     foes = sorted(w.enemies(alliance, alive=False), key=lambda u: u.id)
     mine_alive = [u for u in mine if u.alive]
@@ -239,11 +314,7 @@ def describe(w: World, alliance: int, *, previous: Plan | None, notes: list[str]
              f"You command alliance {alliance}."]
     if immediate:
         lines.append("")
-        lines.append("IMMEDIATE ORDERS FROM YOUR SOVEREIGN (given during the battle - top priority, carry them out NOW "
-                     "and keep following them until done or replaced; units are named as in the unit list, e.g. "
-                     "'Kavallerie 3', enemy units with 'gegn.'; descriptions like 'the enemy guns on the left' refer to "
-                     "the positions in the lists below, left/right as seen by your army facing the enemy). Start your "
-                     "intent with a one-line acknowledgement in German of how you carry out the newest order:")
+        lines.append("IMMEDIATE ORDERS FROM YOUR SOVEREIGN (top priority, acknowledge the newest in German):")
         for t0, text in immediate:
             lines.append(f"  - at battle time {w.battle_time_at(t0):.0f} s ({w.time - t0:.0f} s ago): {text}")
         lines.append("")
@@ -263,9 +334,9 @@ def describe(w: World, alliance: int, *, previous: Plan | None, notes: list[str]
     lines += zone_lines(w, alliance, fr, gun_zone)
     lines.append("")
     lines.append("YOUR UNITS:")
-    lines += ["  " + _unit_line(w, u, foes_alive, tasks.get(u.id), fr) for u in mine]
+    lines += ["  " + _brief_line(w, u, foes_alive, known, tasks.get(u.id), fr) for u in mine]
     lines.append("ENEMY UNITS:")
-    lines += ["  " + _unit_line(w, u, mine_alive) for u in foes]
+    lines += ["  " + _brief_line(w, u, mine_alive, known) for u in foes]
     pred = _predictions(w, mine_alive, foes_alive)
     lines.append("PREDICTED (if everyone keeps course):")
     lines += ["  " + p for p in pred] if pred else ["  no contact expected within 30 s"]

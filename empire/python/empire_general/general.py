@@ -88,7 +88,7 @@ Handing units over: your sovereign can take units over to command them personall
 with an immediate order (e.g. "gib mir Kavallerie 1", "ich übernehme die Artillerie", "die Generäle führe ich \
 selbst", "nimm Infanterie 4 wieder", "du übernimmst wieder alles"). Then put those unit ids into give_to_player \
 (units the sovereign takes) or take_from_player (units that come back to you; in the report they are marked \
-COMMANDED BY THE PLAYER). Resolve descriptions such as "the cavalry on the left" to the listed units. Do this \
+PLAYER). Resolve descriptions such as "the cavalry on the left" to the listed units. Do this \
 ONLY for such an explicit order, never on your own initiative and never for orders that only tell units what to \
 do; otherwise leave both lists []. Do not give orders to units you hand over in the same plan. The handover is \
 carried out once for the newest order; you need not repeat it in later plans.
@@ -180,7 +180,7 @@ def system_prompt(rules: str = "", strategy: str = "", orders: str = "", role: s
 
 
 class General(Protocol):
-    def plan(self, report: str, world: World, alliance: int) -> Plan: ...
+    def plan(self, report: str, world: World, alliance: int, system: str | None = None, static: str = "") -> Plan: ...
 
 
 class ClaudeGeneral:
@@ -198,14 +198,20 @@ class ClaudeGeneral:
         self.system = system_prompt(rules, strategy, instructions)   # Standard; der Feldherr uebergibt pro Plan einen aktuellen
         self.last_usage: dict | None = None
 
-    def plan(self, report: str, world: World, alliance: int, system: str | None = None) -> Plan:
+    def plan(self, report: str, world: World, alliance: int, system: str | None = None, static: str = "") -> Plan:
+        """static = fester Teil der Schlacht (Leseanleitung + Stammdaten): eigener Cache-Abschnitt hinter dem
+        System-Prompt, danach die wechselnde Lage (ungecacht)."""
         a = self.anthropic
+        content = report
+        if static:
+            content = [{"type": "text", "text": static, "cache_control": {"type": "ephemeral"}},
+                       {"type": "text", "text": report}]
         try:
             resp = self.client.beta.messages.parse(
                 model=self.model,
                 max_tokens=16000,
                 system=[{"type": "text", "text": system or self.system, "cache_control": {"type": "ephemeral"}}],
-                messages=[{"role": "user", "content": report}],
+                messages=[{"role": "user", "content": content}],
                 output_format=WirePlan,   # vereinfachtes Schema, siehe plan.py
                 output_config={"effort": self.effort},
                 betas=["server-side-fallback-2026-07-01"],
@@ -238,7 +244,7 @@ class RuleGeneral:
     """Ohne Sprachmodell: Artillerie haelt und feuert, Infanterie rueckt in Linie bis 120 m vor und greift dann
     die naechste Einheit an, Kavallerie schuetzt die Flanken. Fuer Offline-Tests der ganzen Kette."""
 
-    def plan(self, report: str, world: World, alliance: int, system: str | None = None) -> Plan:
+    def plan(self, report: str, world: World, alliance: int, system: str | None = None, static: str = "") -> Plan:
         mine = world.side(alliance)
         foes = world.enemies(alliance)
         cm, ce = centroid(mine), centroid(foes)
