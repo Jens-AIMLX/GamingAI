@@ -24,30 +24,6 @@ do
 	-- jede Pruefung "seit 2 s Ruhe" o. ae. war damit kaputt (Diagnose 2026-11-20 23:57: 17 s Abstand = "+0s").
 	local function now() return os.clock() end
 
-	-- Diagnose Ladeablauf (voruebergehend): welche Spielereignisse kommen nach dem Laden ohne Eingabe? Jedes Ereignis
-	-- aus data.events mit Uhrzeit nach ai_bridge/campaign_events.log - nur die ersten 300 s nach Skriptstart, hoechstens
-	-- 3000 Zeilen. Reines Lua (Datei schreiben), keine Engine-Aufrufe.
-	local diag_t0, diag_n = now(), 0
-	local function diag(msg)
-		if diag_n >= 3000 or now() - diag_t0 > 300 then return end
-		diag_n = diag_n + 1
-		pcall(function()
-			local f = io.open(P .. "campaign_events.log", diag_n == 1 and "w" or "a")
-			f:write(os.date("%H:%M:%S"), string.format("  +%3ds  ", now() - diag_t0), msg, "\n")
-			f:close()
-		end)
-	end
-	diag("Skript geladen")
-	pcall(function()
-		local ev = require("data.events")
-		local es0 = require("EpisodicScripting")
-		for name in pairs(ev) do
-			if type(name) == "string" then
-				pcall(es0.AddEventCallBack, name, function() diag(name) end)
-			end
-		end
-	end)
-
 	-- Fehler der Erfassung sichtbar machen: ai_bridge/campaign_capture.error (neueste zuerst ueberschrieben) und
 	-- empire_bridge_log.txt
 	local function log_error(msg)
@@ -469,7 +445,6 @@ do
 			tick_seq = tick_seq + 1
 			local name = TICK .. tick_seq
 			local ok = pcall(function() es.game_interface:add_time_trigger(name, 1) end)
-			diag("Takt gestellt: " .. name .. (ok and "" or " (FEHLER)"))
 			if ok and es.game_interface then tick_name = name; armed_at = now() end
 		end
 		-- Aktionen im eigenen Zug merken; der Takt erfasst, sobald 2 s Ruhe ist (eine Klickfolge = eine Erfassung)
@@ -503,7 +478,6 @@ do
 				return
 			end
 			tick_seen = now()
-			diag("Takt: " .. name)
 			pcall(function()
 				if need_initial then
 					local okp, mine = pcall(CampaignUI.IsPlayersTurn)
