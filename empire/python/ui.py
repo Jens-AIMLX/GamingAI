@@ -39,6 +39,7 @@ sys.path.insert(0, str(HERE))
 from empire_bridge import EmpireBridge  # noqa: E402
 import overlay_panel  # noqa: E402
 from empire_campaign import report as campaign_report  # noqa: E402
+from empire_campaign import views as campaign_views  # noqa: E402
 
 MODELS = {
     "Claude Opus 5.5 (stärkstes Modell)": ("claude", "claude-opus-5-5"),
@@ -935,35 +936,60 @@ class App(tk.Tk):
 
     # ---------- Kampagne (Stufe 1: Bestandsbericht + Empfehlungen nach festen Regeln) ----------
     def _build_campaign_tab(self) -> ttk.Frame:
+        """Kampagne als Liste (wie die Einheitenliste): Kopfzeile, Ansichtswahl, Liste mit Farben nach Dringlichkeit."""
         tab = ttk.Frame(self.nb, padding=6)
         tab.columnconfigure(0, weight=1)
+        self.camp_header = ttk.Label(tab, text="Noch kein Lagebericht - er entsteht zu Beginn jedes eigenen Zugs auf der "
+                                               "Kampagnenkarte und nach jeder Aktion.", foreground="#777")
+        self.camp_header.grid(row=0, column=0, columnspan=2, sticky="w")
         bar = ttk.Frame(tab)
-        bar.grid(row=0, column=0, columnspan=2, sticky="ew")
-        self.camp_status = ttk.Label(bar, text="Noch kein Lagebericht - er entsteht zu Beginn jedes eigenen Zugs "
-                                               "auf der Kampagnenkarte.", foreground="#777")
-        self.camp_status.pack(side="left")
-        ttk.Button(bar, text="Neu laden", command=lambda: self._campaign_refresh(force=True)).pack(side="right")
+        bar.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        view = self.s.get("campaign_view")
+        self.camp_view_var = tk.StringVar(value=view if view in campaign_views.VIEWS else campaign_views.VIEWS[0])
+        for name in campaign_views.VIEWS:
+            ttk.Radiobutton(bar, text=name, value=name, variable=self.camp_view_var,
+                            command=self._campaign_view_changed).pack(side="left", padx=(0, 8))
+        ttk.Button(bar, text="Aktualisieren", command=self._campaign_request).pack(side="right")
         self.camp_fog_var = tk.BooleanVar(value=bool(self.s.get("campaign_fog", False)))
-        ttk.Checkbutton(bar, text="Feinde im Nebel des Krieges einbeziehen (Spezialschalter)", variable=self.camp_fog_var,
+        ttk.Checkbutton(bar, text="Nebel einbeziehen (Spezialschalter)", variable=self.camp_fog_var,
                         command=self._campaign_fog_changed).pack(side="right", padx=12)
-        self.camp_rec = tk.Text(tab, height=8, wrap="word", font=("Segoe UI", 9), background="#f6f6f6")
-        self.camp_rep = tk.Text(tab, height=8, wrap="word", font=("Consolas", 9), background="#f6f6f6")
-        for row, (txt, title) in enumerate(((self.camp_rec, "Handlungsempfehlungen"), (self.camp_rep, "Bestandsbericht"))):
-            ttk.Label(tab, text=title, font=("Segoe UI", 9, "bold")).grid(row=1 + 2 * row, column=0, sticky="w", pady=(6, 0))
-            txt.grid(row=2 + 2 * row, column=0, sticky="nsew")
-            sb = ttk.Scrollbar(tab, command=txt.yview)
-            sb.grid(row=2 + 2 * row, column=1, sticky="ns")
-            txt["yscrollcommand"] = sb.set
-            txt.config(state="disabled")
+        self.camp_tree = ttk.Treeview(tab, show="headings", height=9, selectmode="extended")
+        self.camp_tree.grid(row=2, column=0, sticky="nsew", pady=(6, 0))
+        sb = ttk.Scrollbar(tab, command=self.camp_tree.yview)
+        sb.grid(row=2, column=1, sticky="ns", pady=(6, 0))
+        self.camp_tree["yscrollcommand"] = sb.set
+        self.camp_tree.tag_configure("urgent", foreground="#b00020")
+        self.camp_tree.tag_configure("warn", foreground="#9a6700")
+        self.camp_tree.tag_configure("muted", foreground="#888888")
         self._camp_mtime = None
-        self._camp_texts = ("", "", "")              # Stand, Empfehlungen, Bericht - auch fuer das Overlay
+        self._camp_views: dict = {}
+        self._camp_header_text = ""
+        self._camp_cols = None
+        self._camp_turn = None
         self._camp_feed_key = None
         return tab
+
+    def _campaign_request(self) -> None:
+        """Knopf "Aktualisieren": das Spiel erfasst beim naechsten Takt (1 s) alles neu, auch Regionen und Bauten."""
+        d = self._overlay_dir()
+        if d is None:
+            return
+        try:
+            (d / "campaign_request.txt").write_text("1", encoding="ascii")
+            self._overlay_note("Kampagne: Aktualisierung angefordert (dauert 1-3 s, nur im eigenen Zug)")
+        except OSError as e:
+            self._overlay_note(f"Kampagne: Anforderung nicht moeglich: {e}")
+
+    def _campaign_view_changed(self) -> None:
+        self.s["campaign_view"] = self.camp_view_var.get()
+        self._schedule_save()
+        self._ov_scroll["camp"] = 0
+        self._campaign_show()
 
     def _campaign_feed(self, force: bool = False) -> None:
         """Meldungsleiste im Spielbild (Overlay zugeklappt) auf der Kampagnenkarte: die wichtigsten Empfehlungen.
         Nur ausserhalb von Schlachten - dort gehoert die Leiste dem Feldherrn (state.json wird jede Sekunde neu
-        geschrieben)."""
+        geschrieben). Neu geschrieben nur, wenn sich die Empfehlungen aendern."""
         d = self._overlay_dir()
         adv = getattr(self, "_camp_advice", None)
         if d is None or not adv:
@@ -975,7 +1001,7 @@ class App(tk.Tk):
         except OSError:
             pass
         turn, advice = adv
-        key = (turn, bool(self.camp_fog_var.get()), len(advice))
+        key = (turn, bool(self.camp_fog_var.get()), tuple(a.line() for a in advice[:6]), len(advice))
         if not force and key == self._camp_feed_key:
             return
         self._camp_feed_key = key
@@ -1006,7 +1032,8 @@ class App(tk.Tk):
         return d / "campaign_state.json" if d is not None else None
 
     def _campaign_refresh(self, force: bool = False) -> None:
-        """Neuer Lagebericht vom Spiel (oder Schalter geaendert): Empfehlungen und Bestandsbericht neu aufbauen."""
+        """Neuer Lagebericht vom Spiel (oder Schalter geaendert): Ansichten neu berechnen, Liste an Ort und Stelle
+        aktualisieren. Ins Protokoll nur bei einem neuen Zug."""
         path = self._campaign_state_path()
         if path is None:
             return
@@ -1021,23 +1048,48 @@ class App(tk.Tk):
             return
         self._camp_mtime = mt
         fog = bool(self.camp_fog_var.get())
-        for widget, text in ((self.camp_rec, campaign_report.recommendations_text(st, fog)),
-                             (self.camp_rep, campaign_report.asset_report(st, fog))):
-            widget.config(state="normal")
-            widget.delete("1.0", "end")
-            widget.insert("1.0", text)
-            widget.config(state="disabled")
+        self._camp_views = campaign_views.build(st, fog)
+        self._camp_header_text = campaign_views.header(st)
+        self.camp_header.config(text=self._camp_header_text, foreground="#1a7f37")
         m = st.get("meta") or {}
         advice = campaign_report.recommendations(st, fog)
-        n = len(advice)
-        status = (f"Lagebericht Zug {m.get('turn')} ({m.get('season')} {m.get('year')}), erfasst {m.get('written')} - "
-                  f"{n} Empfehlungen")
-        self.camp_status.config(text=status, foreground="#1a7f37")
-        self._camp_texts = (status, self.camp_rec.get("1.0", "end-1c"), self.camp_rep.get("1.0", "end-1c"))
         self._camp_advice = (m.get("turn"), advice)
-        self._campaign_feed(force=True)
-        if not force:
-            self._append(f"Kampagne: neuer Lagebericht Zug {m.get('turn')} - {n} Empfehlungen (Tab „Kampagne“)\n")
+        self._campaign_feed()
+        self._campaign_show()
+        if m.get("turn") != self._camp_turn:
+            self._camp_turn = m.get("turn")
+            urgent = sum(1 for a in advice if a.prio == 1)
+            self._append(f"Kampagne: Zug {m.get('turn')} - {urgent} dringende von {len(advice)} Empfehlungen "
+                         "(Tab „Kampagne“)\n")
+
+    def _campaign_show(self) -> None:
+        """Gewaehlte Ansicht in die Liste: Spalten nur beim Ansichtswechsel neu, Zeilen an Ort und Stelle (Auswahl und
+        Bildlauf bleiben)."""
+        tree = self.camp_tree
+        v = self._camp_views.get(self.camp_view_var.get())
+        if v is None:
+            return
+        cols = tuple(c for c, _ in v.columns)
+        if cols != self._camp_cols:
+            tree.delete(*tree.get_children())
+            ids = [f"c{i}" for i in range(len(cols))]
+            tree["columns"] = ids
+            for cid, (label, rel) in zip(ids, v.columns):
+                tree.heading(cid, text=label)
+                tree.column(cid, width=int(rel * 9), anchor="w")
+            self._camp_cols = cols
+        keep = {k for k, _ in v.rows}
+        for iid in tree.get_children():
+            if iid not in keep:
+                tree.delete(iid)
+        for i, (key, cells) in enumerate(v.rows):
+            tag = v.tags.get(key) or ""
+            if tree.exists(key):
+                if tuple(tree.item(key, "values")) != tuple(cells):
+                    tree.item(key, values=cells, tags=(tag,))
+                tree.move(key, "", i)
+            else:
+                tree.insert("", i, iid=key, values=cells, tags=(tag,))
 
     def _overlay_data(self) -> "overlay_panel.PanelData":
         model = self.model_var.get().split(" (")[0].replace("Claude ", "")
@@ -1059,7 +1111,12 @@ class App(tk.Tk):
             selected=tuple(self.units_tree.selection()), scroll=dict(self._ov_scroll),
             menu_open=self._ov_menu, log_view=self._log_view(), zone_on=self.zone_on_var.get(), zone_m=self._zone_m(),
             pressed=self._ov_pressed[0] if self._ov_pressed and time.monotonic() - self._ov_pressed[1] < 0.3 else None,
-            camp_status=self._camp_texts[0], camp_rec=self._camp_texts[1], camp_rep=self._camp_texts[2],
+            camp_header=self._camp_header_text, camp_view=self.camp_view_var.get(),
+            camp_cols=tuple(self._camp_views[self.camp_view_var.get()].columns)
+            if self.camp_view_var.get() in self._camp_views else (),
+            camp_rows=tuple((cells, self._camp_views[self.camp_view_var.get()].tags.get(k, ""))
+                            for k, cells in self._camp_views[self.camp_view_var.get()].rows)
+            if self.camp_view_var.get() in self._camp_views else (),
             camp_fog=bool(self.camp_fog_var.get()),
             focus=self._ov_focus, caret=self._ov_caret, review=self._ov_review_data(),
             width=self._ov_geom()[2], height=self._ov_geom()[3])
@@ -1322,6 +1379,11 @@ class App(tk.Tk):
         elif k == "m_effort":
             self.effort_var.set(a[1])
             self._schedule_save()
+        elif k == "camp_view":                              # Kampagne: Ansicht der Liste
+            self.camp_view_var.set(a[1])
+            self._campaign_view_changed()
+        elif k == "camp_refresh":                           # Kampagne: Aktualisierung im Spiel anfordern
+            self._campaign_request()
         elif k == "camp_fog":                               # Kampagne: Spezialschalter Nebel des Krieges
             self.camp_fog_var.set(not self.camp_fog_var.get())
             self._campaign_fog_changed()

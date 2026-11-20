@@ -104,9 +104,10 @@ class PanelData:
     focus: str | None = None                               # Feld mit Tastaturfokus (EDITABLE oder "chat")
     caret: int = 0                                         # Cursor im Fokusfeld (Zeichen ab Anfang)
     review: dict | None = None                             # offene Pruefung: title, status, analysis, proposal, done
-    camp_status: str = ""                                  # Kampagne (Stufe 1): Stand des Lageberichts
-    camp_rec: str = ""                                     # Handlungsempfehlungen
-    camp_rep: str = ""                                     # Bestandsbericht
+    camp_header: str = ""                                  # Kampagne: Kopfzeile (Zug, Kasse, Saldo, Rang, Stand)
+    camp_view: str = "Empfehlungen"                        # gewaehlte Ansicht der Liste
+    camp_cols: tuple = ()                                  # ((Ueberschrift, relative Breite), ...)
+    camp_rows: tuple = ()                                  # ((Zellen...), Hervorhebung), ...
     camp_fog: bool = False                                 # Spezialschalter: Feinde im Nebel einbeziehen
     width: int = 560                                       # Groesse des Overlays (mit der Maus aenderbar)
     height: int = 360
@@ -433,18 +434,7 @@ def render(p: PanelData) -> tuple[Image.Image, list[Hot]]:
                            first=first, bar=bar))
 
     elif p.tab == "Kampagne":
-        st = p.camp_status or "Noch kein Lagebericht - er entsteht zu Beginn jedes eigenen Zugs auf der Kampagnenkarte."
-        bx = W - 12 - int(font(11, True).getlength("Nebel: einbezogen")) - 14
-        pt.button(bx, top - 2, "Nebel: einbezogen" if p.camp_fog else "Nebel: aus", ("camp_fog",), accent=p.camp_fog)
-        f10 = font(10)
-        while st and f10.getlength(st) > bx - 20:          # Stand vor dem Knopf abschneiden
-            st = st[:-2].rstrip() + "…"
-        d.text((12, top + 1), st, font=f10, fill=GREEN if p.camp_rec else MUTED)
-        mid = top + 24 + (bottom_y - top - 24) * 45 // 100
-        pt.textbox("camp_rec", (12, top + 24, W - 12, mid - 4), p.camp_rec, title="Handlungsempfehlungen",
-                   colors=_camp_color, f=font(11), fsize=11)
-        pt.textbox("camp_rep", (12, mid + 2, W - 12, bottom_y - 4), p.camp_rep, title="Bestandsbericht",
-                   f=font(11), fsize=11)
+        _campaign(pt, top, bottom_y)
 
     # Chat-Zeile (immer sichtbar)
     cy = H - 30
@@ -482,14 +472,62 @@ def render(p: PanelData) -> tuple[Image.Image, list[Hot]]:
     return pt.img, pt.hots
 
 
-def _camp_color(line: str):
-    if line.startswith("[dringend]"):
-        return ORANGE
-    if line.startswith("[wichtig]"):
-        return TEXT
-    if line.startswith("[Hinweis]"):
-        return MUTED
-    return GOLD
+CAMP_SHORT = {"Empfehlungen": "Empfehl.", "Militär": "Militär", "Regionen": "Regionen", "Bauplätze": "Bauten",
+              "Forschung": "Forschung", "Feinde": "Feinde", "Diplomatie": "Diplom."}
+CAMP_TAG_COLOR = {"urgent": ORANGE, "warn": GOLD, "muted": MUTED}
+
+
+def _fit(text: str, f, width: float) -> str:
+    """Text auf eine Spaltenbreite kuerzen (mit ...)."""
+    if f.getlength(text) <= width:
+        return text
+    while text and f.getlength(text + "\u2026") > width:
+        text = text[:-1]
+    return text + "\u2026"
+
+
+def _campaign(pt: Painter, top: int, bottom_y: int) -> None:
+    """Kampagne als Liste wie die Einheiten: Kopfzeile, Knoepfe Nebel/Aktualisieren, Ansichten, Tabelle."""
+    p, d = pt.p, pt.d
+    f10, f11 = font(10), font(11)
+    x = W - 12
+    for label, action, accent in (("Aktualisieren", ("camp_refresh",), False),
+                                  ("Nebel: einbezogen" if p.camp_fog else "Nebel: aus", ("camp_fog",), p.camp_fog)):
+        x -= int(font(11, True).getlength(label)) + 14
+        pt.button(x, top - 2, label, action, accent=accent)
+        x -= 6
+    head = p.camp_header or "Noch kein Lagebericht - er entsteht zu Beginn jedes eigenen Zugs und nach jeder Aktion."
+    d.text((12, top + 1), _fit(head, f10, x - 18), font=f10, fill=GREEN if p.camp_header else MUTED)
+    bx = 12
+    for name in CAMP_SHORT:
+        bx = pt.button(bx, top + 22, CAMP_SHORT[name], ("camp_view", name), accent=p.camp_view == name) - 2
+    y0, y1 = top + 46, bottom_y - 4
+    d.rectangle((12, y0, W - 12, y1), fill=PANEL, outline=EDGE)
+    cols = list(p.camp_cols)
+    if not cols:
+        d.text((20, y0 + 6), "keine Daten", font=f11, fill=MUTED)
+        return
+    total = sum(w for _, w in cols) or 1
+    avail = W - 24 - 18
+    xs, cx = [], 16
+    for _, w in cols:
+        xs.append((cx, avail * w / total))
+        cx += avail * w / total
+    for (label, _), (cx, cw) in zip(cols, xs):
+        d.text((cx, y0 + 2), _fit(label, font(11, True), cw - 6), font=font(11, True), fill=GOLD)
+    rows = list(p.camp_rows)
+    visible = max((y1 - y0 - 22) // LINE_H, 1)
+    maxfirst = max(len(rows) - visible, 0)
+    first = min(max(p.scroll.get("camp") or 0, 0), maxfirst)
+    for i, (cells, tag) in enumerate(rows[first:first + visible]):
+        yy = y0 + 20 + i * LINE_H
+        col = CAMP_TAG_COLOR.get(tag, TEXT)
+        for cell, (cx, cw) in zip(cells, xs):
+            d.text((cx, yy), _fit(str(cell), f11, cw - 6), font=f11, fill=col)
+    bar = (W - 21, y0 + 20, W - 15, y1 - 2)
+    pt.scrollbar(W - 21, y0 + 20, y1 - y0 - 22, len(rows), visible, first)
+    pt.hots.append(Hot(12, y0 + 20, W - 12, y1, ("scroll", "camp"), total=len(rows), visible=visible, first=first,
+                       bar=bar))
 
 
 def _review_view(pt: Painter, top: int, bottom_y: int) -> None:
