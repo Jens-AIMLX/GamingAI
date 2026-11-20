@@ -75,6 +75,12 @@ class GroupOrder(BaseModel):
     reflexes: list[Reflex] | None = Field(default=None, description="conditional orders for this group")
 
 
+class Designation(BaseModel):
+    term: str = Field(description="the sovereign's words for a set of units, e.g. 'frontale Kavallerie', 'Feldartillerie'")
+    unit_ids: list[int]
+    redefined: bool = False
+
+
 class Plan(BaseModel):
     intent: str = Field(description="One or two sentences: the overall idea of the plan")
     note: str = Field(description="A short note to yourself for the next plans: what you are trying, what the enemy keeps "
@@ -82,6 +88,7 @@ class Plan(BaseModel):
     groups: list[GroupOrder]
     give_to_player: list[int] = Field(default_factory=list, description="your unit ids the sovereign takes over to command personally")
     take_from_player: list[int] = Field(default_factory=list, description="unit ids the sovereign hands back to you")
+    designations: list[Designation] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -106,6 +113,14 @@ class WireReflexOrder(BaseModel):
     distance_m: float = Field(description="fall_back: metres (e.g. 60); otherwise 0")
     target_point: list[float] = Field(description="move: [x, z]; otherwise []")
     run: bool
+
+
+class WireDesignation(BaseModel):
+    term: str = Field(description="the sovereign's own words for a set of your units, exactly as written, e.g. "
+                                  "'frontale Kavallerie', 'Fernartillerie'")
+    unit_ids: list[int] = Field(description="the units you take these words to mean")
+    redefined: bool = Field(description="true ONLY if the sovereign's newest order explicitly assigns these words to "
+                                        "other units than listed under SOVEREIGN'S DESIGNATIONS; otherwise false")
 
 
 class WireReflex(BaseModel):
@@ -146,6 +161,10 @@ class WirePlan(BaseModel):
     groups: list[WireGroup]
     give_to_player: list[int] = Field(description="ONLY when an immediate order of the sovereign says they take units "
                                                   "over to command personally: those unit ids (yours, not yet theirs); otherwise []")
+    designations: list[WireDesignation] = Field(description="designations the sovereign uses in orders that are NOT yet "
+                                                            "listed under SOVEREIGN'S DESIGNATIONS (or that the sovereign "
+                                                            "explicitly redefines), with the units you resolved them to; "
+                                                            "otherwise []")
     take_from_player: list[int] = Field(description="ONLY when an immediate order of the sovereign hands units back to "
                                                     "you: those unit ids (now commanded by them); otherwise []")
 
@@ -180,4 +199,6 @@ def to_plan(w: WirePlan) -> Plan:
             engage_within_m=g.engage_within_m or None, keep_range_m=g.keep_range_m or None,
             fire_at_will=_flag(g.fire_at_will), skirmish=_flag(g.skirmish), reflexes=reflexes or None))
     return Plan(intent=w.intent, note=w.note, groups=groups, give_to_player=list(w.give_to_player),
-                take_from_player=list(w.take_from_player))
+                take_from_player=list(w.take_from_player),
+                designations=[Designation(term=d.term.strip(), unit_ids=list(d.unit_ids), redefined=d.redefined)
+                              for d in w.designations if d.term.strip() and d.unit_ids])

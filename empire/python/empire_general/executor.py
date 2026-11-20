@@ -56,6 +56,7 @@ class Executor:
         self.plan_warnings: list[str] = []
         self._pending_flags: list[Order] = []
         self.cease_fire: set[int] = set()           # Artillerie, die wegen eigener Truppen am Ziel nicht feuert
+        self.limber: dict[int, dict] = {}            # Auf-/Abprotz-Zustand je Geschuetz
 
     # ---------- neuer Plan ----------
     DEPLOY_MAX_M = 150.0      # Aufstellung: hoechstens so weit hinter die hinterste Einheit
@@ -103,12 +104,14 @@ class Executor:
                                              for p in (g.waypoints or []) if len(p) >= 2]
                     # Neuplanung mit derselben Route: schon passierte Wegpunkte nicht noch einmal anlaufen
                     wps = self._skip_passed(mine[uid].pos, wps, finals[uid])
-                    close += sum(1 for p in wps + [finals[uid]] if foes and w.nearest(p, foes)[1] < self.ROUTE_WARN_M)
+                    # nur Rueckzuege pruefen (Ziel weiter vom Feind als jetzt) - Vormarsch an den Feind ist gewollt
+                    if foes and w.nearest(finals[uid], foes)[1] > w.nearest(mine[uid].pos, foes)[1] + 20:
+                        close += sum(1 for p in wps + [finals[uid]] if w.nearest(p, foes)[1] < self.ROUTE_WARN_M)
                     gr.stages[uid] = wps + [finals[uid]]
                     gr.places[uid] = finals[uid]
                 if close and not deploy:
                     self.plan_warnings.append(
-                        f"group '{g.name}': its route/target passes within {self.ROUTE_WARN_M:.0f} m of enemy units "
+                        f"group '{g.name}': its retreat route passes within {self.ROUTE_WARN_M:.0f} m of enemy units "
                         "(musket range) - to get out of fire, first move straight away from the enemy, then sideways")
             else:
                 for uid in ids:
@@ -289,7 +292,7 @@ class Executor:
                 self.errors.append(msg)
                 self.errors = self.errors[-20:]
             self.fail_count[cmd] = self.fail_count.get(cmd, 0) + 1
-            if cmd in ("fire_at_will", "skirmish", "withdraw") and self.fail_count[cmd] >= 2:
+            if cmd in ("fire_at_will", "skirmish", "withdraw", "perform_special_ability") and self.fail_count[cmd] >= 2:
                 self.disabled.add(cmd)
 
     SAFETY_M = 50.0
@@ -324,6 +327,7 @@ class Executor:
                 if want is None:
                     continue
                 want = self._artillery_safety(u, want, w)
+                orders += self._limber(u, want, w)
                 if self._should_issue(u, want, w):
                     o = self._to_order(u, want, w)
                     if o:
@@ -331,6 +335,36 @@ class Executor:
                         self.last[uid] = want
                         self.last_t[uid] = w.time
         return orders
+
+    # ---------- Artillerie auf-/abprotzen ----------
+    LIMBER_ABILITY = "unlimber"   # Spiel-Faehigkeit (Umschalter auf-/abprotzen), Liste aus Empire.exe
+    LIMBER_RETRY_S = 10.0
+
+    def _limber(self, u: Unit, want: tuple, w: World) -> list[Order]:
+        """Abgeprotzte Geschuetze ignorieren Marschbefehle aus dem Skript (Schlacht 2026-11-20 08:30: Artillerie
+        stand trotz move 150 s still). Steht ein Geschuetz mit Marschziel still, wird aufgeprotzt (Umschalter); faehrt
+        es danach, gilt es als aufgeprotzt. Am Ziel oder bei Halt/Angriff wird wieder abgeprotzt. Nur EIN Versuch je
+        Marschziel (Aufprotzen dauert einige Sekunden - ein zweiter Umschaltbefehl wuerde wieder abprotzen); lehnt das
+        Spiel den Befehl zweimal ab, wird er abgeschaltet."""
+        if u.role != "artillery" or "perform_special_ability" in self.disabled:
+            return []
+        st = self.limber.setdefault(u.id, {"limbered": False, "tries": 0, "t": -1e9, "target": None})
+        if u.speed > 1.0 and st["tries"]:          # geschoben (abgeprotzt) sind es nur ~0,5 m/s
+            st["limbered"] = True
+        if want[0] == "goto" and dist(u.pos, want[1]) > ARRIVE_M * 2:
+            if st["target"] is None or dist(st["target"], want[1]) > 30:
+                st["target"], st["tries"] = want[1], 0
+            if (not u.moving and not st["limbered"] and st["tries"] < 1
+                    and w.time - self.last_t.get(u.id, -1e9) >= 3 and w.time - st["t"] >= self.LIMBER_RETRY_S):
+                st["tries"] += 1
+                st["t"] = w.time
+                self.last.pop(u.id, None)       # Marschbefehl direkt danach erneut senden
+                return [Order(u.bid, "perform_special_ability", [self.LIMBER_ABILITY])]
+            return []
+        if st["limbered"] and not u.moving:
+            st.update(limbered=False, tries=0, target=None, t=w.time)
+            return [Order(u.bid, "perform_special_ability", [self.LIMBER_ABILITY])]   # am Ziel / Halt: abprotzen
+        return []
 
     def _desired(self, g: GroupRun, u: Unit, w: World, foes: list[Unit]) -> tuple | None:
         o = g.order

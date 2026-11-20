@@ -174,7 +174,9 @@ def write_roster(path: Path, w: World, sides: dict) -> None:
     alls = sorted({u.alliance for u in w.units.values()})
     data = {"time": w.time, "phase": w.phase, "player_alliance": w.player_alliance or 1, "units": units,
             "situation": {str(a): situation_summary(w, a) for a in alls},
-            "orders": {str(a): [t for _, t in s.immediate] for a, s in sides.items()}}
+            "orders": {str(a): [t for _, t in s.immediate] for a, s in sides.items()},
+            "designations": {str(a): {term: [w.units[i].name for i in ids if i in w.units]
+                                      for term, ids in s.designations.values()} for a, s in sides.items()}}
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
@@ -219,6 +221,8 @@ class Side:
         # Befehl: sonst gaebe der Feldherr eine Einheit, die der Spieler per Hotkey zurueckgeholt hat, erneut ab
         self.handover_since: float | None = None
         self.handover_done: set[int] = set()
+        self.designations: dict[str, tuple[str, list[int]]] = {}   # 'frontale kavallerie' -> ('frontale Kavallerie', [106, 109])
+        self.unit_names = lambda ids: ", ".join(f"#{i}" for i in ids)
         self.ready_handover: tuple[list[int], list[int]] | None = None
 
     def changed(self, w: World) -> bool:
@@ -230,6 +234,11 @@ class Side:
         return any(dist(u.pos, self.last_pos.get(u.id, u.pos)) > 20 for u in w.units.values())
 
     def _run(self, kind: str, fn, report: str, t_game: float) -> None:
+        # Welche Chat-Befehle kennt dieser Plan? Nur ein Plan, dessen Bericht den Befehl schon enthielt, darf ihn
+        # bestaetigen oder Einheiten uebergeben (Schlacht 2026-11-20 08:30: zweimal die Absicht eines aelteren Plans
+        # als Antwort gezeigt). -1 = kein Befehl im Bericht.
+        seen = max((t for t, _ in self.immediate), default=-1e9) if kind == "plan" else -1e9
+        newest_text = self.immediate[-1][1] if self.immediate and kind == "plan" else ""
         self.busy = True
         self.log({"type": "report" if kind == "plan" else "deploy_report", "alliance": self.alliance, "t": t_game, "text": report})
 
@@ -243,8 +252,8 @@ class Side:
                     self.ready_deploy = plan
                 self.log({"type": kind, "alliance": self.alliance, "t": t_game, "secs": round(time.monotonic() - t0, 1),
                           "usage": getattr(self.general, "last_usage", None), "plan": plan.model_dump(exclude_none=True)})
-                fresh = (self.handover_since is not None and
-                         0 <= t_game - self.handover_since <= HANDOVER_WINDOW_S)
+                fresh = (self.handover_since is not None and seen >= self.handover_since and
+                         t_game - self.handover_since <= HANDOVER_WINDOW_S)
                 give = [i for i in plan.give_to_player if i not in self.handover_done]
                 take = [i for i in plan.take_from_player if i not in self.handover_done]
                 if kind == "plan" and fresh and (give or take):
@@ -254,7 +263,8 @@ class Side:
                     self.log({"type": "warning", "alliance": self.alliance, "t": t_game,
                               "text": "Uebergabe im Plan ignoriert (kein neuer Chat-Befehl): "
                                       f"an Spieler {plan.give_to_player}, zurueck {plan.take_from_player}"})
-                if kind == "plan" and self.ack_since is not None and t_game >= self.ack_since:
+                self._learn_designations(plan, newest_text, t_game)
+                if kind == "plan" and self.ack_since is not None and seen >= self.ack_since:
                     self.ack_since = None
                     self.log({"type": "info", "t": t_game, "text": f"Feldherr Allianz {self.alliance} zum Befehl: {plan.intent}"})
             except Exception as e:  # Planung darf die Schlacht nie stoppen: Executor macht mit dem alten Plan weiter
@@ -265,6 +275,28 @@ class Side:
 
         threading.Thread(target=run, daemon=True).start()
 
+    def _learn_designations(self, plan: Plan, newest_text: str, t_game: float) -> None:
+        """Bezeichnungen des Spielers festhalten. Neue werden uebernommen; eine bekannte Bezeichnung aendert sich nur,
+        wenn das Modell sie als ausdruecklich umdefiniert meldet UND sie im neuesten Befehl vorkommt."""
+        for d in plan.designations:
+            key = " ".join(d.term.lower().split())
+            if not key or not d.unit_ids:
+                continue
+            ids = [i for i in d.unit_ids if i // 100 == self.alliance]
+            if not ids:
+                continue
+            old = self.designations.get(key)
+            if old and sorted(old[1]) == sorted(ids):
+                continue
+            if old and not (d.redefined and key in " ".join(newest_text.lower().split())):
+                self.log({"type": "warning", "alliance": self.alliance, "t": t_game,
+                          "text": f"Bezeichnung '{old[0]}' bleibt {old[1]} (Plan wollte {ids})"})
+                continue
+            self.designations[key] = (d.term.strip(), ids)
+            self.log({"type": "designation", "alliance": self.alliance, "t": t_game, "term": d.term.strip(),
+                      "units": ids, "text": f"Bezeichnung {'neu festgelegt' if old else 'festgelegt'}: "
+                                            f"'{d.term.strip()}' = {self.unit_names(ids)}"})
+
     def start_plan(self, w: World) -> None:
         men = (w.men_total(self.alliance), w.men_total(self.alliance, enemy=True))
         losses = None
@@ -272,7 +304,8 @@ class Side:
             losses = (self.last_men[0] - men[0], self.last_men[1] - men[1])
         report = describe(w, self.alliance, previous=self.ex.plan, notes=self.notes, tasks=self.ex.tasks(w),
                           reflex_status=self.ex.reflex_status(), losses=losses,
-                          errors=self.ex.errors[-5:] + self.ex.plan_warnings, immediate=self.immediate)
+                          errors=self.ex.errors[-5:] + self.ex.plan_warnings, immediate=self.immediate,
+                          designations=self.designations)
         self.last_men = men
         self.last_pos = {u.id: u.pos for u in w.units.values()}
         self.last_plan_t = w.time
@@ -281,7 +314,7 @@ class Side:
         self._run("plan", lambda r: self.general.plan(r, w, self.alliance, system), report, w.time)
 
     def start_deploy(self, w: World, deploy_orders: str) -> None:
-        report = describe_deployment(w, self.alliance, deploy_orders)
+        report = describe_deployment(w, self.alliance, deploy_orders, designations=self.designations)
         self.deploy_done = False
         system = self.system_for(self.alliance)
         self._run("deploy", lambda r: self.general.plan_deployment(r, w, self.alliance, system), report, w.time)
@@ -361,12 +394,15 @@ def main() -> int:
             say(f"[{entry['t']:6.0f}s] Aufstellungsplan Allianz {entry['alliance']} ({entry['secs']} s): {entry['plan']['intent']}")
         elif entry["type"] == "error":
             say(f"[{entry['t']:6.0f}s] FEHLER Allianz {entry['alliance']}: {entry['error']}")
+        elif entry["type"] in ("designation",):
+            say(f"[{entry['t']:6.0f}s] Allianz {entry['alliance']}: {entry['text']}")
         elif entry["type"] == "info":
             say(f"[{entry.get('t', 0):6.0f}s] {entry['text']}")
 
     def side_for(a: int) -> Side:
         if a not in sides:
             sides[a] = Side(a, make_general(args.backend, args.model, args.effort, rules), log, system_for)
+            sides[a].unit_names = lambda ids: ", ".join(w.units[i].name if i in w.units else f"#{i}" for i in ids)
             role = "Spielerarmee" if a == (w.player_alliance or 1) else "Gegnerarmee"
             say(f"Allianz {a} ist die {role}.")
             say(f"Uebernehme Allianz {a} ({len(w.side(a))} Einheiten).")

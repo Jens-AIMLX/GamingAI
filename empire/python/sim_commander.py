@@ -72,6 +72,7 @@ local function mkarmy(us)
     function c:halt() for _, u in ipairs(self.units) do u.target = nil; u.attack = nil end end
     function c:attack_unit(t, run, q) assert(t and t.position, "attack_unit braucht Einheit"); for _, u in ipairs(self.units) do u.attack = t; u.target = nil end end
     function c:fire_at_will(b) assert(type(b) == "boolean") end
+    function c:perform_special_ability(s) assert(type(s) == "string") end
     return c
   end
   return a

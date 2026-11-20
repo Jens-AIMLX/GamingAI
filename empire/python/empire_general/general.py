@@ -87,6 +87,16 @@ ONLY for such an explicit order, never on your own initiative and never for orde
 do; otherwise leave both lists []. Do not give orders to units you hand over in the same plan. The handover is \
 carried out once for the newest order; you need not repeat it in later plans.
 
+The sovereign's designations: the sovereign names sets of units in their own words ("frontale Kavallerie", \
+"Feldartillerie", "Fernartillerie", "linker Flügel"). The first time you resolve such words to units, list them \
+in designations (term exactly as written, the unit ids). From then on they appear under SOVEREIGN'S DESIGNATIONS \
+in every report and mean EXACTLY those units for the rest of the battle - even when the units have moved, so that \
+"frontale Kavallerie" no longer describes where they stand. Never reinterpret them. Only if the newest order \
+explicitly assigns the words to other units ("frontale Kavallerie sind jetzt Kavallerie 1 und 4") report the term \
+again with redefined=true. Name the units in your acknowledgement (e.g. "Frontale Kavallerie (Kavallerie 2, 5) ..."). \
+Typical meanings when nothing else is fixed: "Feldartillerie"/"Frontartillerie"/"normale Artillerie" = the field \
+guns (cannons), "Fernartillerie"/"weitreichende Artillerie"/"Mörser" = the mortars and long-range guns.
+
 Answer format: every field of every group is required. For fields that do not apply use 0 (numbers), -1 \
 (facing_deg = towards the enemy), [] (lists and points), "absolute" (ref, when not used), "centre" (attach), \
 "none" (side) or "unchanged" (fire_at_will, skirmish).
@@ -101,7 +111,14 @@ hits the side or rear.
 Limits of your command (do not plan or promise these, they cannot be ordered): the artillery's ammunition type \
 (round shot, canister, shell) and the infantry's formation type (square, column, fire by rank) are chosen by the \
 game's own unit behaviour. The terrain (hills, woods, rivers) is not reported - only the ground height under each unit; a "hill crest" can only be estimated from those heights. Artillery firing at a target automatically ceases fire while your own units are within \
-50 m of that target, and resumes when they are clear.\
+50 m of that target, and resumes when they are clear.
+
+Moving artillery: guns must be limbered to move. When you give artillery a move task, the subordinate limbers \
+the guns automatically and unlimbers them on arrival or when you switch them to halt/attack. Limbered guns cannot \
+fire and travel slowly, so move them in few, clear bounds. "Aufprotzen und mitziehen" = move task (only the guns \
+the sovereign named). To follow the infantry, give the guns ONE fixed placement relative to the infantry (e.g. \
+ref "Infanterie 3", back_m 40) and keep exactly that placement in the following plans; do not change the distance \
+or the reference every plan, and do not switch the guns between move and attack while they are on the way.\
 """
 
 

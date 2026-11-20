@@ -111,9 +111,22 @@ def _predictions(w: World, mine: list[Unit], foes: list[Unit]) -> list[str]:
     return sorted(out)
 
 
+def designation_lines(w: World, designations: dict | None) -> list[str]:
+    """Feste Bezeichnungen des Spielers ('frontale Kavallerie' = Kavallerie 2, 5) - einmal aufgeloest, gelten sie fuer
+    die ganze Schlacht; sonst deutet jeder Plan sie neu (Schlacht 2026-11-20 08:30: andere Kavallerie beim 2. Angriff)."""
+    if not designations:
+        return []
+    out = ["SOVEREIGN'S DESIGNATIONS (fixed for this battle - when the sovereign uses these words, they mean EXACTLY "
+           "these units, wherever the units stand now; never reinterpret them):"]
+    for term, ids in designations.values():
+        names = ", ".join(f"{w.units[i].name} (#{i})" + ("" if w.units[i].alive else " - gone") for i in ids if i in w.units)
+        out.append(f"  '{term}' = {names}")
+    return out
+
+
 def describe(w: World, alliance: int, *, previous: Plan | None, notes: list[str], tasks: dict[int, str],
              reflex_status: list[str], losses: tuple[int, int] | None, errors: list[str],
-             immediate: list[tuple[float, str]] | None = None) -> str:
+             immediate: list[tuple[float, str]] | None = None, designations: dict | None = None) -> str:
     mine = sorted(w.side(alliance, alive=False), key=lambda u: u.id)
     foes = sorted(w.enemies(alliance, alive=False), key=lambda u: u.id)
     mine_alive = [u for u in mine if u.alive]
@@ -129,6 +142,9 @@ def describe(w: World, alliance: int, *, previous: Plan | None, notes: list[str]
                      "intent with a one-line acknowledgement in German of how you carry out the newest order:")
         for t0, text in immediate:
             lines.append(f"  - at battle time {w.battle_time_at(t0):.0f} s ({w.time - t0:.0f} s ago): {text}")
+        lines.append("")
+    if designations:
+        lines += designation_lines(w, designations)
         lines.append("")
     cm, ce = centroid(mine_alive), centroid(foes_alive)
     if cm and ce:
@@ -163,7 +179,7 @@ def describe(w: World, alliance: int, *, previous: Plan | None, notes: list[str]
 DEPLOY_RADIUS_M = 150.0
 
 
-def describe_deployment(w: World, alliance: int, deploy_orders: str) -> str:
+def describe_deployment(w: World, alliance: int, deploy_orders: str, designations: dict | None = None) -> str:
     """Bericht fuer die Aufstellung (vor Schlachtbeginn). Die Grenzen des Aufstellungsbereichs liefert die
     Spiel-API nicht; deshalb bleibt jede Einheit in der Naehe ihrer Startposition."""
     mine = sorted(w.side(alliance, alive=False), key=lambda u: u.id)
@@ -189,6 +205,7 @@ def describe_deployment(w: World, alliance: int, deploy_orders: str) -> str:
         lines.append(f"Your units currently stand between x {min(xs):.0f}..{max(xs):.0f} and z {min(zs):.0f}..{max(zs):.0f}.")
     if deploy_orders.strip():
         lines.append("")
+        lines += designation_lines(w, designations)
         lines.append("DEPLOYMENT ORDERS FROM YOUR SOVEREIGN (follow them):")
         lines.append(deploy_orders.strip())
     fr = w.frame(alliance)
