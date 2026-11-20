@@ -142,7 +142,9 @@ class App(tk.Tk):
         self._loading = False
         self._write_runtime()
         # Overlay im Spielbild: kompakte Ansicht DIESER Daten (overlay_panel.py), F8 im Spiel schaltet sie
-        self._ov_view = 0               # 0 = zugeklappt, 1..5 = Tab overlay_panel.TABS[view - 1]
+        self._ov_view = 1               # 0 = zugeklappt (Meldungsleiste), 1..n = Tab overlay_panel.TABS[view - 1]
+        self._ov_last_view = 1          # Tab, den F8 beim Aufklappen wieder zeigt
+        self._ov_mode: str | None = None   # "battle" / "campaign" (automatisch erkannt)
         self._ov_f8: int | None = None  # zuletzt gesehene F8-Zaehlung der DLL
         self._ov_seq = 0
         self._ov_open_written = False
@@ -1080,6 +1082,31 @@ class App(tk.Tk):
         except tk.TclError:
             return None
 
+    def _overlay_mode(self, d: Path) -> None:
+        """Schlacht oder Kampagnenkarte? In Schlachten schreibt das Battle-Skript state.json jede Sekunde. Beim Start
+        und bei jedem Wechsel zeigt das Overlay IMMER das volle Interface mit dem passenden Tab (Feldherr bzw.
+        Kampagne); nur F8 klappt es zur Meldungsleiste zu."""
+        try:
+            battle = time.time() - (d / "state.json").stat().st_mtime < 15
+        except OSError:
+            battle = False
+        mode = "battle" if battle else "campaign"
+        if mode == self._ov_mode:
+            return
+        first = self._ov_mode is None
+        self._ov_mode = mode
+        tab = "Feldherr" if battle else "Kampagne"
+        self._ov_view = self._ov_last_view = overlay_panel.TABS.index(tab) + 1
+        self._ov_menu = False
+        self._ov_focus = None
+        if self._ov_view >= 2:                        # Fenster zeigt denselben Tab
+            try:
+                self.nb.select(self._ov_view - 2)
+            except tk.TclError:
+                pass
+        self._overlay_note(("Start" if first else "Wechsel") + ": " + ("Schlacht erkannt - Overlay zeigt den Feldherrn"
+                           if battle else "Kampagnenkarte erkannt - Overlay zeigt die Kampagne"))
+
     def _overlay_tick(self) -> None:
         """F8-Zaehlung der DLL lesen, bei offenem Overlay das Bild neu zeichnen (bei Aenderung, sonst jede Sekunde -
         so erkennt die DLL, dass das Steuerpult noch lebt)."""
@@ -1093,10 +1120,17 @@ class App(tk.Tk):
             if self._ov_f8 is None:
                 self._ov_f8 = n                     # alter Stand beim Start: nicht reagieren
             elif n != self._ov_f8:
-                presses = n - self._ov_f8 if n > self._ov_f8 else n   # Empire neu gestartet: Zaehler von vorn
+                restarted = n < self._ov_f8
+                presses = n - self._ov_f8 if not restarted else n   # Empire neu gestartet: Zaehler von vorn
                 self._ov_f8 = n
-                for _ in range(presses):
-                    self._ov_view = (self._ov_view + 1) % (len(overlay_panel.TABS) + 1)
+                if restarted:
+                    self._ov_mode = None                # neues Spiel: wieder mit vollem Interface beginnen
+                for _ in range(presses):                # F8 schaltet nur um: volles Interface <-> Meldungsleiste
+                    if self._ov_view:
+                        self._ov_last_view, self._ov_view = self._ov_view, 0
+                    else:
+                        self._ov_view = self._ov_last_view or 1
+        self._overlay_mode(d)
         expanded = bool(self._ov_view) and self.overlay_var.get()
         path = d / "overlay_panel.bin"
         self._ov_typed = False
@@ -1108,6 +1142,7 @@ class App(tk.Tk):
                 self._ov_seq += 1
                 overlay_panel.write_panel(None, path, self._ov_seq, False)
                 self._ov_open_written = False
+                self._ov_key = None             # beim Aufklappen sofort neu zeichnen (nicht erst nach 1 s)
             return
         data = self._overlay_data()
         key = repr(data)
