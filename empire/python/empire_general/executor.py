@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from empire_bridge import Order
 
 from .plan import GroupOrder, Plan, Reflex
+from . import firelanes
 from .units import frontage_m
 from .world import Frame, Unit, World, bearing_to, centroid, dist
 
@@ -57,6 +58,8 @@ class Executor:
         self._pending_flags: list[Order] = []
         self.cease_fire: set[int] = set()           # Artillerie, die wegen eigener Truppen am Ziel nicht feuert
         self.limber: dict[int, dict] = {}            # Auf-/Abprotz-Zustand je Geschuetz
+        self.lanes: list = []                        # Schusskanaele der Feldgeschuetze (letzter Takt)
+        self.reached: dict[int, list[tuple[float, float]]] = {}   # erreichte Wegpunkte je Einheit
 
     # ---------- neuer Plan ----------
     DEPLOY_MAX_M = 150.0      # Aufstellung: hoechstens so weit hinter die hinterste Einheit
@@ -103,7 +106,7 @@ class Executor:
                     wps = [] if deploy else [(float(p[0]) + off[0], float(p[1]) + off[1])
                                              for p in (g.waypoints or []) if len(p) >= 2]
                     # Neuplanung mit derselben Route: schon passierte Wegpunkte nicht noch einmal anlaufen
-                    wps = self._skip_passed(mine[uid].pos, wps, finals[uid])
+                    wps = self._skip_passed(uid, mine[uid].pos, wps)
                     # nur Rueckzuege pruefen (Ziel weiter vom Feind als jetzt) - Vormarsch an den Feind ist gewollt
                     if foes and w.nearest(finals[uid], foes)[1] > w.nearest(mine[uid].pos, foes)[1] + 20:
                         close += sum(1 for p in wps + [finals[uid]] if w.nearest(p, foes)[1] < self.ROUTE_WARN_M)
@@ -126,38 +129,101 @@ class Executor:
                 if g.skirmish is not None and "skirmish" not in self.disabled:
                     self._pending_flags.append(Order(bid, "skirmish", [bool(g.skirmish)]))
             self.groups.append(gr)
+        if not deploy:              # in der Aufstellung schiesst niemand
+            self._keep_out_of_lanes(w)
         # Neue Befehle sofort erzwingen
         self.last.clear()
 
-    @staticmethod
-    def _attack_route(gr: GroupRun, g: GroupOrder, units: list[Unit], w: World) -> None:
+    def _gun_targets(self) -> dict[int, int]:
+        """Ziele der KI-gefuehrten Geschuetze: aus dem laufenden Befehl, sonst aus dem Plan"""
+        out = {uid: want[1] for uid, want in self.last.items() if want and want[0] == "attack"}
+        for g in self.groups:
+            if g.order.task == "attack" and g.order.target_unit is not None:
+                for uid in g.unit_ids:
+                    out.setdefault(uid, g.order.target_unit)
+        return out
+
+    def _keep_out_of_lanes(self, w: World) -> None:
+        """Plaetze und Wege der eigenen Einheiten aus den Schusskanaelen der Feldgeschuetze halten: Plaetze im Kanal
+        werden seitlich herausgeschoben, Wege durch den Kanal bekommen einen Umweg (seitlich entlang oder hinter dem
+        Geschuetz herum). Auch fuer attack: der Weg zum Ziel fuehrt nicht durch das eigene Schussfeld."""
+        ls = firelanes.lanes(w, self.alliance, self._gun_targets())
+        if not ls:
+            return
+        for gr in self.groups:
+            moved = detoured = 0
+            names: set[str] = set()
+            for uid in gr.unit_ids:
+                u = w.units.get(uid)
+                if not u or u.role == "artillery":
+                    continue
+                own = [l for l in ls if l.gun.id != uid]
+                if gr.order.task == "move" and uid in gr.places:
+                    p = gr.places[uid]
+                    for l in own:
+                        near = (u.role not in ("general", "heavy_cavalry", "light_cavalry", "missile_cavalry")
+                                and dist(p, l.gun.pos) <= firelanes.SCREEN_M)
+                        if l.contains(p) and not near:
+                            p = l.exit_point(p)
+                            moved += 1
+                            names.add(l.gun.name)
+                    if p != gr.places[uid]:
+                        gr.places[uid] = p
+                        gr.stages[uid] = (gr.stages.get(uid) or [])[:-1] + [p]
+                end = None
+                if gr.order.task == "attack" and gr.order.target_unit in w.units:
+                    end = w.units[gr.order.target_unit].pos
+                stages = list(gr.stages.get(uid) or [])
+                if gr.order.task not in ("move", "attack") or (not stages and end is None):
+                    continue
+                path = [u.pos] + stages + ([end] if end else [])
+                new: list[tuple[float, float]] = []
+                for a, b in zip(path, path[1:]):
+                    for l in own:
+                        det = l.detour(a, b)
+                        if det:
+                            new += det
+                            detoured += 1
+                            names.add(l.gun.name)
+                            break
+                    new.append(b)
+                if end:
+                    new = new[:-1]          # das Ziel selbst ist kein Wegpunkt
+                if new != stages:
+                    gr.stages[uid] = new
+            if moved or detoured:
+                self.plan_warnings.append(
+                    f"group '{gr.order.name}': kept out of the line of fire of {', '.join(sorted(names))} "
+                    f"({moved} place(s) moved beside it, {detoured} route(s) led around it)")
+
+    def _attack_route(self, gr: GroupRun, g: GroupOrder, units: list[Unit], w: World) -> None:
         """attack mit Wegpunkten (Umfassung, Flankenangriff): jede Einheit laeuft erst die Wegpunkte ab - versetzt um
         ihren Abstand zur Gruppenmitte, damit die Gruppe nicht auf einen Punkt zusammenlaeuft - und greift dann an.
-        Der Feldherr plant alle paar Sekunden neu und schickt dieselben Wegpunkte wieder: Wegpunkte, an denen die
-        Einheit schon vorbei ist (der naechste Punkt / das Ziel ist von ihr aus naeher als vom Wegpunkt), entfallen."""
+        Schon erreichte Wegpunkte entfallen bei Neuplanungen (_skip_passed)."""
         c = centroid(units)
-        tgt = w.units.get(g.target_unit) if g.target_unit is not None else None
         for u in units:
             off = (u.x - c[0], u.z - c[1]) if c else (0.0, 0.0)
             wps = [(float(p[0]) + off[0], float(p[1]) + off[1]) for p in g.waypoints or [] if len(p) >= 2]
-            wps = Executor._skip_passed(u.pos, wps, tgt.pos if tgt else None)
+            wps = self._skip_passed(u.id, u.pos, wps)
             if wps:
                 gr.stages[u.id] = wps
 
     ROUTE_WARN_M = 100.0
+    REACHED_M = 25.0
 
-    @staticmethod
-    def _skip_passed(pos: tuple[float, float], wps: list[tuple[float, float]],
-                     end: tuple[float, float] | None) -> list[tuple[float, float]]:
-        """Wegpunkte, an denen die Einheit schon vorbei ist, entfallen: der naechste Punkt (oder das Ziel) ist von ihr
-        aus naeher als vom Wegpunkt. Sonst schickt jede Neuplanung sie zum ersten Wegpunkt zurueck."""
-        wps = list(wps)
-        while wps:
-            nxt = wps[1] if len(wps) > 1 else end
-            if nxt is None or dist(pos, nxt) > dist(wps[0], nxt):
-                break
-            wps.pop(0)
-        return wps
+    def _skip_passed(self, uid: int, pos: tuple[float, float],
+                     wps: list[tuple[float, float]]) -> list[tuple[float, float]]:
+        """Neuplanung mit derselben Route: Wegpunkte, die die Einheit schon ERREICHT hat (oder an denen sie gerade
+        steht), entfallen - sonst schickt jede Neuplanung sie zum ersten Wegpunkt zurueck. Wegpunkte, die sie noch nicht
+        erreicht hat, bleiben immer, auch wenn sie "hinter" ihr liegen (Rueckzug: erst weg vom Feind, dann seitlich)."""
+        reached = self.reached.get(uid, [])
+        out = list(wps)
+        while out and (dist(pos, out[0]) < ARRIVE_M * 2 or any(dist(out[0], r) < self.REACHED_M for r in reached)):
+            out.pop(0)
+        return out
+
+    def _mark_reached(self, uid: int, p: tuple[float, float]) -> None:
+        self.reached[uid] = (self.reached.get(uid, []) + [p])[-10:]
 
     def _resolve_relative(self, plan: Plan, w: World, mine: dict[int, Unit], fr: Frame | None
                           ) -> dict[int, tuple[tuple[float, float], float, dict[int, tuple[float, float]]]]:
@@ -299,17 +365,33 @@ class Executor:
 
     def _artillery_safety(self, u: Unit, want: tuple, w: World) -> tuple:
         """Artillerie stellt das Feuer ein, solange eigene Einheiten naeher als SAFETY_M am Ziel sind
-        (Nahkampf, eigene Linie davor) - und feuert wieder, sobald es frei ist."""
+        (Nahkampf, eigene Linie davor) oder - bei Feldgeschuetzen - im Schusskanal zum Ziel stehen; sie feuert
+        wieder, sobald es frei ist."""
         if u.role != "artillery" or want[0] != "attack":
             return want
         t = w.units.get(want[1])
         if not t:
             return want
+        lane = None
+        if firelanes.is_direct_fire(u):
+            lane = next((l for l in firelanes.lanes(w, self.alliance, {u.id: t.id}) if l.gun.id == u.id), None)
         for o in w.side(self.alliance):
-            if o.id != u.id and o.role != "artillery" and dist(o.pos, t.pos) < self.SAFETY_M:
+            if o.id == u.id or o.role == "artillery":
+                continue
+            if dist(o.pos, t.pos) < self.SAFETY_M or (lane is not None and firelanes.blocking(o, lane)):
                 self.cease_fire.add(u.id)
                 return ("halt",)
         self.cease_fire.discard(u.id)
+        return want
+
+    def _sidestep(self, u: Unit, want: tuple, g: "GroupRun", ls: list) -> tuple:
+        """Einheit, die halten soll, steht im Schusskanal eines eigenen Feldgeschuetzes: seitlich heraustreten."""
+        if want[0] != "halt" or u.role == "artillery":
+            return want
+        for l in firelanes.in_lanes(u, ls):
+            p = l.exit_point(u.pos)
+            g.places[u.id] = p
+            return ("goto", p, False)
         return want
 
     # ---------- jede Sekunde ----------
@@ -317,6 +399,8 @@ class Executor:
         orders: list[Order] = self._pending_flags
         self._pending_flags = []
         foes = w.enemies(self.alliance)
+        ls = firelanes.lanes(w, self.alliance, self._gun_targets())
+        self.lanes = ls
         for g in self.groups:
             self._check_reflexes(g, w, foes)
             for uid in g.unit_ids:
@@ -327,6 +411,7 @@ class Executor:
                 if want is None:
                     continue
                 want = self._artillery_safety(u, want, w)
+                want = self._sidestep(u, want, g, ls)
                 orders += self._limber(u, want, w)
                 if self._should_issue(u, want, w):
                     o = self._to_order(u, want, w)
@@ -398,7 +483,7 @@ class Executor:
         if o.task == "attack":
             route = g.stages.get(u.id)
             while route and dist(u.pos, route[0]) < ARRIVE_M * 2:
-                route.pop(0)
+                self._mark_reached(u.id, route.pop(0))
             if route:
                 return ("goto", route[0], o.run)        # erst ueber die Wegpunkte, dann angreifen
             tgt = w.units.get(o.target_unit) if o.target_unit is not None else None
@@ -424,7 +509,7 @@ class Executor:
             if not stages:
                 return ("halt",)
             while len(stages) > 1 and dist(u.pos, stages[0]) < ARRIVE_M:
-                stages.pop(0)
+                self._mark_reached(u.id, stages.pop(0))
             return ("goto", stages[0], o.run)
         return None
 
@@ -514,7 +599,7 @@ class Executor:
                     if g.stages.get(uid):
                         s += f", marching via waypoints ({len(g.stages[uid])} left) before attacking"
                 if uid in self.cease_fire:
-                    s += " (HOLDING FIRE: own troops within 50 m of the target)"
+                    s += " (HOLDING FIRE: own troops within 50 m of the target or in its line of fire)"
                 out[uid] = s
         return out
 

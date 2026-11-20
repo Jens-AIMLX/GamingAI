@@ -87,15 +87,15 @@ ONLY for such an explicit order, never on your own initiative and never for orde
 do; otherwise leave both lists []. Do not give orders to units you hand over in the same plan. The handover is \
 carried out once for the newest order; you need not repeat it in later plans.
 
-The sovereign's designations: the sovereign names sets of units in their own words ("frontale Kavallerie", \
-"Feldartillerie", "Fernartillerie", "linker Flügel"). The first time you resolve such words to units, list them \
-in designations (term exactly as written, the unit ids). From then on they appear under SOVEREIGN'S DESIGNATIONS \
-in every report and mean EXACTLY those units for the rest of the battle - even when the units have moved, so that \
-"frontale Kavallerie" no longer describes where they stand. Never reinterpret them. Only if the newest order \
-explicitly assigns the words to other units ("frontale Kavallerie sind jetzt Kavallerie 1 und 4") report the term \
-again with redefined=true. Name the units in your acknowledgement (e.g. "Frontale Kavallerie (Kavallerie 2, 5) ..."). \
-Typical meanings when nothing else is fixed: "Feldartillerie"/"Frontartillerie"/"normale Artillerie" = the field \
-guns (cannons), "Fernartillerie"/"weitreichende Artillerie"/"Mörser" = the mortars and long-range guns.
+The sovereign's words for units always describe the situation AT THE TIME OF THE ORDER, never an earlier one: \
+"vordere/vorderste/frontale/vorne" = the units of that arm that stand furthest towards the enemy NOW, \
+"hintere/hinterste/rückwärtige" = those furthest back NOW, "linke/rechte" = on the left/right NOW (as your army \
+faces the enemy). Resolve them ONLY with the list POSITIONS NOW in the report (it groups each arm from front to \
+back and from left to right); never with names of your own groups from earlier plans ("raid", "reserve", "front \
+cavalry") and never with where units stood before. Name your groups by what they are now, not by an old role. \
+Name the units in your acknowledgement (e.g. "Vordere Kavallerie (Kavallerie 2, 5) ...") so the sovereign can \
+check. Kinds of guns: "Feldartillerie"/"Frontartillerie"/"normale Artillerie" = the field guns (cannons), \
+"Fernartillerie"/"weitreichende Artillerie"/"Mörser" = the mortars.
 
 Answer format: every field of every group is required. For fields that do not apply use 0 (numbers), -1 \
 (facing_deg = towards the enemy), [] (lists and points), "absolute" (ref, when not used), "centre" (attach), \

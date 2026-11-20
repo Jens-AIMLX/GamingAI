@@ -5,6 +5,7 @@ welche feindliche Einheit bei gleichbleibendem Kurs in den naechsten 30 s welche
 """
 from __future__ import annotations
 
+from . import firelanes
 from .plan import Plan
 from .units import frontage_m, is_cavalry
 from .world import Frame, Unit, World, bearing_to, centroid, compass, dist
@@ -111,22 +112,94 @@ def _predictions(w: World, mine: list[Unit], foes: list[Unit]) -> list[str]:
     return sorted(out)
 
 
-def designation_lines(w: World, designations: dict | None) -> list[str]:
-    """Feste Bezeichnungen des Spielers ('frontale Kavallerie' = Kavallerie 2, 5) - einmal aufgeloest, gelten sie fuer
-    die ganze Schlacht; sonst deutet jeder Plan sie neu (Schlacht 2026-11-20 08:30: andere Kavallerie beim 2. Angriff)."""
-    if not designations:
+ARMS = [("cavalry", "Kavallerie"), ("infantry", "Infanterie"), ("field guns", "Feldartillerie"),
+        ("mortars", "Moerser/Fernartillerie"), ("generals", "Generaele")]
+SPLIT_DEPTH_M = 40.0      # Luecke von vorn nach hinten, ab der zwei Gruppen entstehen
+SPLIT_SIDE_M = 60.0
+
+
+def _arm(u: Unit) -> str:
+    if u.role == "general":
+        return "generals"
+    if is_cavalry(u.role):
+        return "cavalry"
+    if u.role == "artillery":
+        return "mortars" if "mortar" in u.type.lower() else "field guns"
+    return "infantry"
+
+
+def _groups(units: list[Unit], key, gap: float) -> list[list[Unit]]:
+    out: list[list[Unit]] = []
+    for u in sorted(units, key=key):
+        if out and key(u) - key(out[-1][-1]) > gap:
+            out.append([u])
+        elif out:
+            out[-1].append(u)
+        else:
+            out.append([u])
+    return out
+
+
+def _labels(n: int, first: str, mid: str, last: str) -> list[str]:
+    if n == 2:
+        return [first, last]
+    return [first] + [mid] * (n - 2) + [last]
+
+
+def position_lines(w: World, alliance: int, fr: Frame | None) -> list[str]:
+    """Lage JETZT je Waffengattung, von vorn nach hinten und von links nach rechts in Gruppen - damit "vordere",
+    "hintere", "linke" Kavallerie immer nach der aktuellen Lage aufgeloest werden (Schlacht 2026-11-20 09:32:
+    vordere/hintere Kavallerie genau vertauscht)."""
+    if fr is None:
         return []
-    out = ["SOVEREIGN'S DESIGNATIONS (fixed for this battle - when the sovereign uses these words, they mean EXACTLY "
-           "these units, wherever the units stand now; never reinterpret them):"]
-    for term, ids in designations.values():
-        names = ", ".join(f"{w.units[i].name} (#{i})" + ("" if w.units[i].alive else " - gone") for i in ids if i in w.units)
-        out.append(f"  '{term}' = {names}")
+    out = ["POSITIONS NOW (resolve 'vordere/frontale/vorderste', 'hintere/hinterste', 'linke', 'rechte' ONLY with "
+           "these lists; positions relative to your front line, + = in front of it towards the enemy):"]
+    def tag(u: Unit) -> str:
+        d = fr.depth(u.pos) - fr.front
+        own = " [player]" if u.manual else ""
+        return f"{u.name}{own} ({d:+.0f} m)"
+    def tag_side(u: Unit) -> str:
+        own = " [player]" if u.manual else ""
+        return f"{u.name}{own} ({fr.lateral(u.pos):+.0f} m)"
+    for arm, label in ARMS:
+        us = [u for u in w.side(alliance) if _arm(u) == arm]
+        if len(us) < 2:
+            continue
+        front = _groups(us, lambda u: -fr.depth(u.pos), SPLIT_DEPTH_M)
+        if len(front) > 1:
+            names = _labels(len(front), "FRONT group (vordere)", "middle group", "REAR group (hintere)")
+            out.append(f"  {label} front to back: " + " | ".join(f"{n}: " + ", ".join(tag(u) for u in g)
+                                                                for n, g in zip(names, front)))
+        else:
+            o = sorted(us, key=lambda u: -fr.depth(u.pos))
+            out.append(f"  {label} front to back: one group, no clear front/rear split - " + ", ".join(tag(u) for u in o))
+        side = _groups(us, lambda u: fr.lateral(u.pos), SPLIT_SIDE_M)
+        if len(side) > 1:
+            names = _labels(len(side), "LEFT group (linke)", "centre group", "RIGHT group (rechte)")
+            out.append(f"  {label} left to right: " + " | ".join(f"{n}: " + ", ".join(tag_side(u) for u in g)
+                                                                for n, g in zip(names, side)))
+    return out
+
+
+def lane_lines(w: World, alliance: int, ls: list) -> list[str]:
+    """Schusskanaele der eigenen Feldgeschuetze und wer gerade darin steht."""
+    if not ls:
+        return []
+    out = [f"LINES OF FIRE of your field guns (corridors ~{2 * firelanes.HALF_M:.0f} m wide from the gun to its target - "
+           "keep every unit OUT of them, also on the way: route behind the guns or beside the corridor; the "
+           "subordinate moves places and routes out of them and a gun holds fire while own troops stand in its corridor; "
+           f"standing infantry within {firelanes.SCREEN_M:.0f} m in front of a gun is fired over and does not count):"]
+    for l in ls:
+        inside = [u for u in w.side(alliance) if firelanes.blocking(u, l)]
+        tgt = f"{l.target.name} (#{l.target.id})" if l.target else "?"
+        who = ", ".join(u.name + (" [player]" if u.manual else "") for u in inside) or "clear"
+        out.append(f"  {l.gun.name} -> {tgt}, {l.length:.0f} m: {'IN IT NOW: ' + who if inside else 'clear'}")
     return out
 
 
 def describe(w: World, alliance: int, *, previous: Plan | None, notes: list[str], tasks: dict[int, str],
              reflex_status: list[str], losses: tuple[int, int] | None, errors: list[str],
-             immediate: list[tuple[float, str]] | None = None, designations: dict | None = None) -> str:
+             immediate: list[tuple[float, str]] | None = None, lanes: list | None = None) -> str:
     mine = sorted(w.side(alliance, alive=False), key=lambda u: u.id)
     foes = sorted(w.enemies(alliance, alive=False), key=lambda u: u.id)
     mine_alive = [u for u in mine if u.alive]
@@ -143,9 +216,6 @@ def describe(w: World, alliance: int, *, previous: Plan | None, notes: list[str]
         for t0, text in immediate:
             lines.append(f"  - at battle time {w.battle_time_at(t0):.0f} s ({w.time - t0:.0f} s ago): {text}")
         lines.append("")
-    if designations:
-        lines += designation_lines(w, designations)
-        lines.append("")
     cm, ce = centroid(mine_alive), centroid(foes_alive)
     if cm and ce:
         lines.append(f"Your army centre ({cm[0]:.0f},{cm[1]:.0f}), enemy centre ({ce[0]:.0f},{ce[1]:.0f}): "
@@ -157,6 +227,8 @@ def describe(w: World, alliance: int, *, previous: Plan | None, notes: list[str]
     lines.append("")
     fr = w.frame(alliance)
     lines += _frame_lines(w, alliance, fr)
+    lines += position_lines(w, alliance, fr)
+    lines += lane_lines(w, alliance, lanes if lanes is not None else firelanes.lanes(w, alliance))
     lines.append("")
     lines.append("YOUR UNITS:")
     lines += ["  " + _unit_line(w, u, foes_alive, tasks.get(u.id), fr) for u in mine]
@@ -179,7 +251,7 @@ def describe(w: World, alliance: int, *, previous: Plan | None, notes: list[str]
 DEPLOY_RADIUS_M = 150.0
 
 
-def describe_deployment(w: World, alliance: int, deploy_orders: str, designations: dict | None = None) -> str:
+def describe_deployment(w: World, alliance: int, deploy_orders: str) -> str:
     """Bericht fuer die Aufstellung (vor Schlachtbeginn). Die Grenzen des Aufstellungsbereichs liefert die
     Spiel-API nicht; deshalb bleibt jede Einheit in der Naehe ihrer Startposition."""
     mine = sorted(w.side(alliance, alive=False), key=lambda u: u.id)
@@ -205,7 +277,6 @@ def describe_deployment(w: World, alliance: int, deploy_orders: str, designation
         lines.append(f"Your units currently stand between x {min(xs):.0f}..{max(xs):.0f} and z {min(zs):.0f}..{max(zs):.0f}.")
     if deploy_orders.strip():
         lines.append("")
-        lines += designation_lines(w, designations)
         lines.append("DEPLOYMENT ORDERS FROM YOUR SOVEREIGN (follow them):")
         lines.append(deploy_orders.strip())
     fr = w.frame(alliance)
