@@ -1,5 +1,21 @@
 
 -- [empire_bridge] BEGIN - von install.py eingefuegt, von install.py --uninstall entfernt
+-- Laedt empire_bridge.dll schon auf der Kampagnenkarte (wie battle_scripted.lua in Schlachten): Overlay im Spielbild
+-- mit dem Steuerpult (F8). Die DLL richtet sich je Spielprozess nur einmal ein (g_installed), mehrfaches Laden ist
+-- harmlos.
+do
+	local ok, res = pcall(function()
+		local init, err = package.loadlib("empire_bridge.dll", "luaopen_empire_bridge")
+		if not init then return "loadlib fehlgeschlagen: " .. tostring(err) end
+		init()
+		return "DLL geladen"
+	end)
+	pcall(function()
+		local f = io.open("empire_bridge_log.txt", "a")
+		f:write(os.date("%Y-%m-%d %H:%M:%S"), "  [lua] campaign scripting.lua: ", tostring(ok), " ", tostring(res), "\n")
+		f:close()
+	end)
+end
 -- Kampagnen-Probe (nur lesen, ruft keine Spielfunktion auf): schreibt nach ai_bridge/campaign_probe.txt, was das
 -- Kampagnen-Lua kann - Bibliotheken (io/os/package.loadlib/debug), globale Namen, Module, Ereignisse, Abfragen
 -- (conditions), die Funktionen von game_interface und CampaignUI sowie die Kontext-Objekte einiger Ereignisse.

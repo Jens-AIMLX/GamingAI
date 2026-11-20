@@ -922,8 +922,7 @@ class App(tk.Tk):
         return self._ov_dir
 
     def _overlay_follow_tab(self) -> None:
-        """Tab-Wechsel im Fenster: das offene Overlay zeigt denselben Tab (Befehle/Strategie/Aufstellung/Einheiten;
-        den Kampagnen-Tab hat das Overlay noch nicht - dann bleibt es, wo es ist)."""
+        """Tab-Wechsel im Fenster: das offene Overlay zeigt denselben Tab (Befehle .. Kampagne)."""
         if self._ov_view:
             try:
                 idx = self.nb.index(self.nb.select())
@@ -955,7 +954,43 @@ class App(tk.Tk):
             txt["yscrollcommand"] = sb.set
             txt.config(state="disabled")
         self._camp_mtime = None
+        self._camp_texts = ("", "", "")              # Stand, Empfehlungen, Bericht - auch fuer das Overlay
+        self._camp_feed_key = None
         return tab
+
+    def _campaign_feed(self, force: bool = False) -> None:
+        """Meldungsleiste im Spielbild (Overlay zugeklappt) auf der Kampagnenkarte: die wichtigsten Empfehlungen.
+        Nur ausserhalb von Schlachten - dort gehoert die Leiste dem Feldherrn (state.json wird jede Sekunde neu
+        geschrieben)."""
+        d = self._overlay_dir()
+        adv = getattr(self, "_camp_advice", None)
+        if d is None or not adv:
+            return
+        try:
+            if time.time() - (d / "state.json").stat().st_mtime < 15:
+                self._camp_feed_key = None               # Schlacht laeuft; danach die Leiste neu schreiben
+                return
+        except OSError:
+            pass
+        turn, advice = adv
+        key = (turn, bool(self.camp_fog_var.get()), len(advice))
+        if not force and key == self._camp_feed_key:
+            return
+        self._camp_feed_key = key
+        import textwrap
+        urgent = sum(1 for a in advice if a.prio == 1)
+        lines = [f"-Kampagne Zug {turn}: {urgent} dringend, {len(advice) - urgent} weitere Empfehlungen (F8)"]
+        for a in advice[:5]:
+            kind = {1: "!", 2: "*"}.get(a.prio, "-")
+            parts = textwrap.wrap(f"{a.area}: {a.text}", 74)[:2] or [""]
+            lines.append(kind + parts[0])
+            lines += [kind + " " + q for q in parts[1:]]
+        tmp = d / "overlay.txt.tmp"
+        try:
+            tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            os.replace(tmp, d / "overlay.txt")
+        except OSError:
+            pass
 
     def _campaign_fog_changed(self) -> None:
         self.s["campaign_fog"] = bool(self.camp_fog_var.get())
@@ -991,9 +1026,14 @@ class App(tk.Tk):
             widget.insert("1.0", text)
             widget.config(state="disabled")
         m = st.get("meta") or {}
-        n = len(campaign_report.recommendations(st, fog))
-        self.camp_status.config(text=f"Lagebericht Zug {m.get('turn')} ({m.get('season')} {m.get('year')}), "
-                                     f"erfasst {m.get('written')} - {n} Empfehlungen", foreground="#1a7f37")
+        advice = campaign_report.recommendations(st, fog)
+        n = len(advice)
+        status = (f"Lagebericht Zug {m.get('turn')} ({m.get('season')} {m.get('year')}), erfasst {m.get('written')} - "
+                  f"{n} Empfehlungen")
+        self.camp_status.config(text=status, foreground="#1a7f37")
+        self._camp_texts = (status, self.camp_rec.get("1.0", "end-1c"), self.camp_rep.get("1.0", "end-1c"))
+        self._camp_advice = (m.get("turn"), advice)
+        self._campaign_feed(force=True)
         if not force:
             self._append(f"Kampagne: neuer Lagebericht Zug {m.get('turn')} - {n} Empfehlungen (Tab „Kampagne“)\n")
 
@@ -1017,6 +1057,8 @@ class App(tk.Tk):
             selected=tuple(self.units_tree.selection()), scroll=dict(self._ov_scroll),
             menu_open=self._ov_menu, log_view=self._log_view(), zone_on=self.zone_on_var.get(), zone_m=self._zone_m(),
             pressed=self._ov_pressed[0] if self._ov_pressed and time.monotonic() - self._ov_pressed[1] < 0.3 else None,
+            camp_status=self._camp_texts[0], camp_rec=self._camp_texts[1], camp_rep=self._camp_texts[2],
+            camp_fog=bool(self.camp_fog_var.get()),
             focus=self._ov_focus, caret=self._ov_caret, review=self._ov_review_data(),
             width=self._ov_geom()[2], height=self._ov_geom()[3])
 
@@ -1245,6 +1287,9 @@ class App(tk.Tk):
         elif k == "m_effort":
             self.effort_var.set(a[1])
             self._schedule_save()
+        elif k == "camp_fog":                               # Kampagne: Spezialschalter Nebel des Krieges
+            self.camp_fog_var.set(not self.camp_fog_var.get())
+            self._campaign_fog_changed()
         elif k == "ctl":                                    # KI fuehrt: eigene / Gegner ein-aus
             self._toggle_side(a[1])
         elif k == "m_groups":
@@ -1391,6 +1436,7 @@ class App(tk.Tk):
         if self._pump_n % 7 == 3:   # etwa jede Sekunde: neuer Kampagnen-Lagebericht vom Spiel?
             try:
                 self._campaign_refresh()
+                self._campaign_feed()                   # nach einer Schlacht die Leiste wieder uebernehmen
             except Exception as e:  # Bericht darf das Steuerpult nie stoeren
                 if not getattr(self, "_camp_err_shown", False):
                     self._camp_err_shown = True

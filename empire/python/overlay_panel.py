@@ -32,7 +32,7 @@ MIN_W, MIN_H, MAX_W, MAX_H = 480, 300, 1400, 1000   # wie PANEL_MIN/MAX in dll/o
 LOG_VIEWS = ["Alles", "Plan Allianz 1", "Plan Allianz 2", "Befehle", "Meldungen"]
 LOG_SHORT = {"Alles": "Alles", "Plan Allianz 1": "Plan 1", "Plan Allianz 2": "Plan 2", "Befehle": "Befehle",
              "Meldungen": "Meldungen"}
-TABS = ["Feldherr", "Befehle", "Strategie", "Aufstellung", "Einheiten"]
+TABS = ["Feldherr", "Befehle", "Strategie", "Aufstellung", "Einheiten", "Kampagne"]
 CONTROLS = [("Gegner", "enemy"), ("Meine Armee", "player"), ("Beide", "both"), ("Aus", "none")]
 EFFORTS = ["low", "medium", "high"]
 
@@ -104,6 +104,10 @@ class PanelData:
     focus: str | None = None                               # Feld mit Tastaturfokus (EDITABLE oder "chat")
     caret: int = 0                                         # Cursor im Fokusfeld (Zeichen ab Anfang)
     review: dict | None = None                             # offene Pruefung: title, status, analysis, proposal, done
+    camp_status: str = ""                                  # Kampagne (Stufe 1): Stand des Lageberichts
+    camp_rec: str = ""                                     # Handlungsempfehlungen
+    camp_rep: str = ""                                     # Bestandsbericht
+    camp_fog: bool = False                                 # Spezialschalter: Feinde im Nebel einbeziehen
     width: int = 560                                       # Groesse des Overlays (mit der Maus aenderbar)
     height: int = 360
 
@@ -305,15 +309,18 @@ def render(p: PanelData) -> tuple[Image.Image, list[Hot]]:
     d.rounded_rectangle((0, 0, W - 1, H - 1), 6, fill=BG, outline=(90, 80, 50, 255))
     d.rectangle((0, 6, 3, H - 7), fill=GOLD)
 
-    # Kopf: Tabs + Menue
+    # Kopf: Tabs + Menue (bei schmalem Overlay kleinere Schrift, damit Greiffeld und Menue Platz behalten)
     x = 12
+    tab_size, tab_pad = 12, 18
+    if sum(int(font(12, True).getlength(t)) + 22 for t in TABS) > W - 110:
+        tab_size, tab_pad = 11, 12
     for t in TABS:
-        f = font(12, True)
-        w = int(f.getlength(t)) + 18
+        f = font(tab_size, True)
+        w = int(f.getlength(t)) + tab_pad
         active = t == p.tab
         d.rounded_rectangle((x, 6, x + w, 28), 4, fill=(60, 55, 40, 255) if active else (30, 32, 40, 255),
                             outline=GOLD if active else EDGE)
-        d.text((x + 9, 9), t, font=f, fill=GOLD if active else MUTED)
+        d.text((x + tab_pad // 2, 9 if tab_size == 12 else 10), t, font=f, fill=GOLD if active else MUTED)
         pt.hots.append(Hot(x, 6, x + w, 28, ("tab", t)))
         x += w + 4
     # Greiffeld zum Verschieben (zwischen Tabs und Menue) - die DLL verschiebt beim Ziehen
@@ -324,7 +331,8 @@ def render(p: PanelData) -> tuple[Image.Image, list[Hot]]:
             for yy in (13, 20):
                 d.ellipse((cxm + i * 7 - 1, yy - 1, cxm + i * 7 + 1, yy + 1), fill=(120, 110, 80, 255))
         pt.hots.append(Hot(gx0, 4, gx1, 30, ("grip_move",)))
-    d.text((W - 66, 8), "F8", font=font(11, True), fill=MUTED)
+    if (W - 70) - (x + 4) > 70:                 # genug Platz neben dem Greiffeld
+        d.text((W - 66, 8), "F8", font=font(11, True), fill=MUTED)
     d.rounded_rectangle((W - 40, 6, W - 12, 28), 4, fill=(60, 55, 40, 255) if p.menu_open else (30, 32, 40, 255),
                         outline=GOLD if p.menu_open else EDGE)
     d.text((W - 31, 6), "\u2261", font=font(16, True), fill=TEXT)          # Menue (Einstellungen)
@@ -424,6 +432,20 @@ def render(p: PanelData) -> tuple[Image.Image, list[Hot]]:
         pt.hots.append(Hot(12, y0 + 20, W - 12, y1, ("scroll", "units"), total=len(p.units), visible=visible,
                            first=first, bar=bar))
 
+    elif p.tab == "Kampagne":
+        st = p.camp_status or "Noch kein Lagebericht - er entsteht zu Beginn jedes eigenen Zugs auf der Kampagnenkarte."
+        bx = W - 12 - int(font(11, True).getlength("Nebel: einbezogen")) - 14
+        pt.button(bx, top - 2, "Nebel: einbezogen" if p.camp_fog else "Nebel: aus", ("camp_fog",), accent=p.camp_fog)
+        f10 = font(10)
+        while st and f10.getlength(st) > bx - 20:          # Stand vor dem Knopf abschneiden
+            st = st[:-2].rstrip() + "…"
+        d.text((12, top + 1), st, font=f10, fill=GREEN if p.camp_rec else MUTED)
+        mid = top + 24 + (bottom_y - top - 24) * 45 // 100
+        pt.textbox("camp_rec", (12, top + 24, W - 12, mid - 4), p.camp_rec, title="Handlungsempfehlungen",
+                   colors=_camp_color, f=font(11), fsize=11)
+        pt.textbox("camp_rep", (12, mid + 2, W - 12, bottom_y - 4), p.camp_rep, title="Bestandsbericht",
+                   f=font(11), fsize=11)
+
     # Chat-Zeile (immer sichtbar)
     cy = H - 30
     d.text((12, cy + 3), "Befehl an", font=font(11), fill=MUTED)
@@ -458,6 +480,16 @@ def render(p: PanelData) -> tuple[Image.Image, list[Hot]]:
     # Menue-Knoepfe vor der Menueflaeche (m_none), diese vor allem darunter
     pt.hots.sort(key=lambda h: 1 if h.action == ("m_none",) else (0 if h.action[0].startswith("m_") else 2))
     return pt.img, pt.hots
+
+
+def _camp_color(line: str):
+    if line.startswith("[dringend]"):
+        return ORANGE
+    if line.startswith("[wichtig]"):
+        return TEXT
+    if line.startswith("[Hinweis]"):
+        return MUTED
+    return GOLD
 
 
 def _review_view(pt: Painter, top: int, bottom_y: int) -> None:
