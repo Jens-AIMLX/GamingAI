@@ -365,6 +365,13 @@ def main() -> int:
     feed = OverlayFeed(br.dir / "overlay.txt")       # Meldungen fuer das Overlay im Spielbild
     feed.add("-", f"Feldherr gestartet ({args.model or args.backend}) - wartet auf eine Schlacht")
 
+    def stamp(t: float) -> str:
+        """Zeit fuer das Protokoll im Steuerpult: Schlachtzeit mm:ss wie im Overlay (vor Schlachtbeginn: Spieluhr)."""
+        if w is not None and w.battle_start is not None and t >= w.battle_start:
+            bt = int(t - w.battle_start)
+            return f"{bt // 60:02d}:{bt % 60:02d}"
+        return f"{t:5.0f}s"
+
     def log(entry: dict) -> None:
         if logf:
             logf.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -375,13 +382,13 @@ def main() -> int:
         except Exception:
             pass   # das Overlay darf den Feldherrn nie stoeren
         if entry["type"] == "plan":
-            say(f"[{entry['t']:6.0f}s] Plan Allianz {entry['alliance']} ({entry['secs']} s): {entry['plan']['intent']}")
+            say(f"[{stamp(entry['t'])}] Plan Allianz {entry['alliance']} ({entry['secs']} s): {entry['plan']['intent']}")
         elif entry["type"] == "deploy":
-            say(f"[{entry['t']:6.0f}s] Aufstellungsplan Allianz {entry['alliance']} ({entry['secs']} s): {entry['plan']['intent']}")
+            say(f"[{stamp(entry['t'])}] Aufstellungsplan Allianz {entry['alliance']} ({entry['secs']} s): {entry['plan']['intent']}")
         elif entry["type"] == "error":
-            say(f"[{entry['t']:6.0f}s] FEHLER Allianz {entry['alliance']}: {entry['error']}")
+            say(f"[{stamp(entry['t'])}] FEHLER Allianz {entry['alliance']}: {entry['error']}")
         elif entry["type"] == "info":
-            say(f"[{entry.get('t', 0):6.0f}s] {entry['text']}")
+            say(f"[{stamp(entry.get('t', 0))}] {entry['text']}")
 
     def side_for(a: int) -> Side:
         if a not in sides:
@@ -422,7 +429,7 @@ def main() -> int:
             s.handover_since = w.time
             s.handover_done.clear()
             log({"type": "order", "alliance": a, "t": w.time, "text": text.strip()})
-            say(f"[{w.time:6.0f}s] Befehl an die {label} (Allianz {a}): {text.strip()}"
+            say(f"[{stamp(w.time)}] Befehl an die {label} (Allianz {a}): {text.strip()}"
                 + ("" if w.phase == "Deployed" else " - wird mit dem ersten Plan nach Schlachtbeginn umgesetzt"))
             return out
         if cmd in ("give_ai", "give_player"):
@@ -534,7 +541,7 @@ def main() -> int:
                     s.ex.set_plan(s.pending_deploy, w, deploy=True)
                     for wtxt in s.ex.plan_warnings:
                         log({"type": "warning", "alliance": a, "t": w.time, "text": wtxt})
-                        say(f"[{w.time:6.0f}s] Allianz {a}: {wtxt}")
+                        say(f"[{stamp(w.time)}] Allianz {a}: {wtxt}")
                     s.pending_deploy = None
                     s.deploying = True
                     s.plans += 1
@@ -583,7 +590,7 @@ def main() -> int:
                 else:
                     txt = f"Allianz {a}: {moved}/{n} Einheiten bewegen sich zur Aufstellung"
                 log({"type": "deploy_check", "alliance": a, "t": w.time, "moved": moved, "units": n, "phase": w.phase, "text": txt})
-                say(f"[{w.time:6.0f}s] {txt}")
+                say(f"[{stamp(w.time)}] {txt}")
             if s.deploying and not s.deploy_done:
                 tasks = s.ex.tasks(w)
                 if tasks and all(t.endswith("in place") for t in tasks.values()):
@@ -609,7 +616,7 @@ def main() -> int:
                         log({"type": "warning", "alliance": a, "t": w.time,
                              "text": f"{u.name} (von dir gefuehrt) steht im Schussfeld von {l.gun.name}"
                                      + (" - das Geschuetz pausiert, bis frei" if l.gun.controlled else "")})
-                        say(f"[{w.time:6.0f}s] ACHTUNG: {u.name} (von dir gefuehrt) steht im Schussfeld von {l.gun.name}")
+                        say(f"[{stamp(w.time)}] ACHTUNG: {u.name} (von dir gefuehrt) steht im Schussfeld von {l.gun.name}")
         write_roster(Path(args.roster), w, sides)
         # gerade an den Spieler freigegebene Einheiten bekommen 3 s Spielzeit lang keine Executor-Befehle mehr
         # (das Lagebild zeigt sie noch ein bis zwei Takte lang als gesteuert)
