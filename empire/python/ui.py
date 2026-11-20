@@ -149,6 +149,7 @@ class App(tk.Tk):
         self._ov_caret = 0                        # Cursor darin (Zeichen ab Anfang)
         self._ov_review: dict | None = None       # offene Pruefung (dasselbe Fenster wie im Steuerpult)
         self._ov_typed = False                    # Eingabe seit dem letzten Bild -> sofort neu zeichnen
+        self._ov_hook = None                      # overlay_kbd.KeyboardHook (Tasten vor Steam/Spiel abfangen)
         self.nb.bind("<<NotebookTabChanged>>", lambda e: self._overlay_follow_tab())
         self._pump_job = self.after(150, self._pump)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -861,7 +862,16 @@ class App(tk.Tk):
             close_s=self.cint_var.get(), selected=tuple(self.units_tree.selection()), scroll=dict(self._ov_scroll),
             menu_open=self._ov_menu, log_view=self._log_view(), zone_on=self.zone_on_var.get(), zone_m=self._zone_m(),
             pressed=self._ov_pressed[0] if self._ov_pressed and time.monotonic() - self._ov_pressed[1] < 0.3 else None,
-            focus=self._ov_focus, caret=self._ov_caret, review=self._ov_review_data())
+            focus=self._ov_focus, caret=self._ov_caret, review=self._ov_review_data(),
+            width=self._ov_geom()[2], height=self._ov_geom()[3])
+
+    def _ov_geom(self) -> list[int]:
+        """Lage des Overlays [x, y, Breite, Hoehe] (x/y = -1: Standard unten links), gespeichert in den Einstellungen."""
+        g = self.s.get("overlay_geom")
+        if not (isinstance(g, list) and len(g) == 4):
+            g = [-1, -1, 560, 360]
+            self.s["overlay_geom"] = g
+        return g
 
     def _ov_review_data(self) -> dict | None:
         r = self._ov_review
@@ -895,6 +905,7 @@ class App(tk.Tk):
         self._ov_typed = False
         if not expanded or not self._ov_focus_ok():
             self._ov_focus = None               # Feld nicht sichtbar -> Tastatur zurueck ans Spiel
+        self._ov_hook_want(bool(expanded and self._ov_focus))
         if not expanded:
             if self._ov_open_written:
                 self._ov_seq += 1
@@ -908,7 +919,9 @@ class App(tk.Tk):
             self._ov_key, self._ov_last = key, now
             self._ov_seq += 1
             img, self._ov_hots = overlay_panel.render(data)
-            overlay_panel.write_panel(img, path, self._ov_seq, True, keyboard=bool(data.focus))
+            g = self._ov_geom()
+            overlay_panel.write_panel(img, path, self._ov_seq, True, keyboard=bool(data.focus), pos=(g[0], g[1]),
+                                      hots=self._ov_hots)
             self._ov_open_written = True
 
     # ---------- Overlay: Maus (Stufe B) ----------
@@ -931,6 +944,17 @@ class App(tk.Tk):
                 self._ov_scroll[key] = overlay_panel.scroll_to(self._ov_drag, y)
             elif kind == "up":
                 self._ov_drag = None
+            elif kind == "moved":                       # im Spiel verschoben (DLL hat es schon umgesetzt)
+                g = self._ov_geom()
+                g[0], g[1] = x, y
+                self._ov_key = None                     # Kopf mit der neuen Position schreiben
+                self._schedule_save()
+            elif kind == "resize":                      # im Spiel aufgezogen: in der neuen Groesse zeichnen
+                g = self._ov_geom()
+                g[2] = min(max(x, overlay_panel.MIN_W), overlay_panel.MAX_W)
+                g[3] = min(max(y, overlay_panel.MIN_H), overlay_panel.MAX_H)
+                self._ov_typed = True
+                self._schedule_save()
             elif kind in ("key", "char"):
                 self._ov_typed = True
                 if self._ov_focus:
@@ -1067,6 +1091,28 @@ class App(tk.Tk):
             self._ov_menu = False
 
     # ---------- Overlay: Tastatur (Stufe C) ----------
+    def _ov_hook_want(self, want: bool) -> None:
+        """Tastaturhook (overlay_kbd) ein/aus: solange ein Overlay-Feld den Fokus hat, sehen Steam und Spiel keine
+        Tasten. Ohne Hook (Fehler) bleibt die Rueckfallebene der DLL (Tasten ueber das Spielfenster)."""
+        if want and self._ov_hook is None and os.name == "nt":
+            try:
+                import overlay_kbd
+                self._ov_hook = overlay_kbd.KeyboardHook(
+                    lambda kind, code, mods: self.calls.put(lambda: self._ov_hook_event(kind, code, mods)))
+            except Exception as e:
+                self._ov_hook = False
+                self._overlay_note(f"Tastaturhook nicht verf\u00fcgbar ({e}) - Tasten gehen \u00fcber das Spielfenster.")
+        if self._ov_hook:
+            self._ov_hook.want = want
+            if self._ov_hook.error and not getattr(self, "_ov_hook_err_shown", False):
+                self._ov_hook_err_shown = True
+                self._overlay_note(f"Tastaturhook: {self._ov_hook.error}")
+
+    def _ov_hook_event(self, kind: str, code: int, mods: int) -> None:
+        self._ov_typed = True
+        if self._ov_focus:
+            self._ov_key_in(kind, code, mods)
+
     def _ov_widget(self, key: str):
         if key == "rev_sug":
             return self._ov_review["sug"] if self._ov_review else None

@@ -26,7 +26,8 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-W, H = 560, 360
+W, H = 560, 360                    # aktuelle Groesse (render() setzt sie aus PanelData.width/height)
+MIN_W, MIN_H, MAX_W, MAX_H = 480, 300, 1400, 1000   # wie PANEL_MIN/MAX in dll/overlay.c
 # Protokoll-Ansichten (wie die Tabs im Steuerpult-Fenster); Spezialansichten zeigen nur ihre Sorte
 LOG_VIEWS = ["Alles", "Plan Allianz 1", "Plan Allianz 2", "Befehle", "Meldungen"]
 LOG_SHORT = {"Alles": "Alles", "Plan Allianz 1": "Plan 1", "Plan Allianz 2": "Plan 2", "Befehle": "Befehle",
@@ -102,6 +103,8 @@ class PanelData:
     focus: str | None = None                               # Feld mit Tastaturfokus (EDITABLE oder "chat")
     caret: int = 0                                         # Cursor im Fokusfeld (Zeichen ab Anfang)
     review: dict | None = None                             # offene Pruefung: title, status, analysis, proposal, done
+    width: int = 560                                       # Groesse des Overlays (mit der Maus aenderbar)
+    height: int = 360
 
 
 @dataclass
@@ -293,6 +296,9 @@ def _log_color(line: str):
 
 
 def render(p: PanelData) -> tuple[Image.Image, list[Hot]]:
+    global W, H
+    W = min(max(int(p.width), MIN_W), MAX_W)
+    H = min(max(int(p.height), MIN_H), MAX_H)
     pt = Painter(p)
     d = pt.d
     d.rounded_rectangle((0, 0, W - 1, H - 1), 6, fill=BG, outline=(90, 80, 50, 255))
@@ -309,6 +315,14 @@ def render(p: PanelData) -> tuple[Image.Image, list[Hot]]:
         d.text((x + 9, 9), t, font=f, fill=GOLD if active else MUTED)
         pt.hots.append(Hot(x, 6, x + w, 28, ("tab", t)))
         x += w + 4
+    # Greiffeld zum Verschieben (zwischen Tabs und Menue) - die DLL verschiebt beim Ziehen
+    gx0, gx1 = x + 4, W - 44
+    if gx1 - gx0 > 30:
+        cxm = (gx0 + W - 70) // 2
+        for i in range(-3, 4):
+            for yy in (13, 20):
+                d.ellipse((cxm + i * 7 - 1, yy - 1, cxm + i * 7 + 1, yy + 1), fill=(120, 110, 80, 255))
+        pt.hots.append(Hot(gx0, 4, gx1, 30, ("grip_move",)))
     d.text((W - 66, 8), "F8", font=font(11, True), fill=MUTED)
     d.rounded_rectangle((W - 40, 6, W - 12, 28), 4, fill=(60, 55, 40, 255) if p.menu_open else (30, 32, 40, 255),
                         outline=GOLD if p.menu_open else EDGE)
@@ -366,7 +380,8 @@ def render(p: PanelData) -> tuple[Image.Image, list[Hot]]:
         d.text((12, top + 24), p.units_info, font=font(10), fill=MUTED)
         y0, y1 = top + 42, bottom_y - 4
         d.rectangle((12, y0, W - 12, y1), fill=PANEL, outline=EDGE)
-        cols = [("Name", 14, 0), ("Mann", 160, 2), ("Lage", 230, 3), ("F\u00fchrung", 330, 4), ("Status", 470, 5)]
+        cols = [(n, int(cx * (W - 24) / 536), i) for n, cx, i in
+                (("Name", 14, 0), ("Mann", 160, 2), ("Lage", 230, 3), ("F\u00fchrung", 330, 4), ("Status", 470, 5))]
         for label, cx, _ in cols:
             d.text((cx + 6, y0 + 2), label, font=font(11, True), fill=GOLD)
         visible = max((y1 - y0 - 22) // LINE_H, 1)
@@ -381,7 +396,7 @@ def render(p: PanelData) -> tuple[Image.Image, list[Hot]]:
             for _, cx, idx in cols:
                 val = str(row[idx]) if idx < len(row) else ""
                 col = BLUE if idx == 4 and val == "KI" else (ORANGE if idx == 5 and val else TEXT)
-                d.text((cx + 6, yy), val[:22], font=font(11), fill=col)
+                d.text((cx + 6, yy), val[:max(22, int(22 * W / 560))], font=font(11), fill=col)
             if bid:
                 pt.hots.append(Hot(13, yy - 1, W - 22, yy + LINE_H - 2, ("unit", bid)))
         bar = (W - 21, y0 + 20, W - 15, y1 - 2)
@@ -411,6 +426,11 @@ def render(p: PanelData) -> tuple[Image.Image, list[Hot]]:
     else:
         d.text((tx + 6, cy + 3), "Befehl eingeben \u2026 (klicken)", font=f11, fill=MUTED)
     pt.button(W - 80, cy, "Senden", ("send",), enabled=p.running and bool(p.chat_text.strip()))
+
+    # Griff zum Groesse-Aendern (unten rechts)
+    for k in (4, 8, 12):
+        d.line((W - 2 - k, H - 3, W - 3, H - 2 - k), fill=(150, 130, 80, 255), width=1)
+    pt.hots.append(Hot(W - 15, H - 15, W, H, ("grip_size",)))
 
     if p.menu_open:
         _menu(pt)
@@ -488,12 +508,25 @@ def scroll_to(hot: Hot, y: int) -> int:
     return int(round(frac * (hot.total - hot.visible)))
 
 
-def write_panel(img: Image.Image | None, path: Path, seq: int, expanded: bool, keyboard: bool = False) -> None:
+def grips(hots: list[Hot]) -> tuple[tuple, tuple]:
+    """Greiffeld (Verschieben) und Griff (Groesse) aus den Bereichen des Bilds - fuer den Kopf der Bilddatei."""
+    def r(action):
+        h = next((h for h in hots if h.action == action), None)
+        return (h.x0, h.y0, h.x1, h.y1) if h else (0, 0, 0, 0)
+    return r(("grip_move",)), r(("grip_size",))
+
+
+def write_panel(img: Image.Image | None, path: Path, seq: int, expanded: bool, keyboard: bool = False,
+                pos: tuple[int, int] = (-1, -1), hots: list[Hot] | None = None) -> None:
     """Bild fuer die DLL schreiben (atomar). Zugeklappt: nur Kopf mit flags=0, keine Pixel.
-    keyboard=True (flags bit 1): ein Feld hat den Fokus - die DLL leitet die Tastatur ins Overlay um."""
+    keyboard=True (flags bit 1): ein Feld hat den Fokus - die DLL leitet die Tastatur ins Overlay um.
+    Aufgeklappt mit flags bit 2: erweiterter Kopf mit Position (-1 = Standard) und den Griffen."""
     w, h = (img.size if img is not None and expanded else (0, 0))
-    flags = (1 if expanded else 0) | (2 if expanded and keyboard else 0)
+    flags = (1 if expanded else 0) | (2 if expanded and keyboard else 0) | (4 if expanded else 0)
     head = struct.pack("<4sIIII", b"EBOV", w, h, seq, flags)
+    if expanded:
+        mv, sz = grips(hots or [])
+        head += struct.pack("<10i", int(pos[0]), int(pos[1]), *mv, *sz)
     data = head + (img.tobytes("raw", "BGRA") if img is not None and expanded else b"")
     tmp = path.with_suffix(".tmp")
     tmp.write_bytes(data)
@@ -575,7 +608,7 @@ class InputReader:
         out = []
         for line in data[:end].decode("ascii", "ignore").splitlines():
             parts = line.split()
-            if len(parts) >= 4 and parts[1] in ("down", "up", "drag", "wheel", "key", "char"):
+            if len(parts) >= 4 and parts[1] in ("down", "up", "drag", "wheel", "key", "char", "moved", "resize"):
                 try:
                     out.append((parts[1], int(parts[2]), int(parts[3]), int(parts[4]) if len(parts) > 4 else 0))
                 except ValueError:

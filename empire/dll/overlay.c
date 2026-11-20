@@ -32,7 +32,15 @@
  * Tastatur (Stufe C): Setzt das Steuerpult im Kopf des Bildes flags bit 1 (ein Feld im Overlay hat den Fokus),
  * meldet die DLL Tasten ("key <vk> <mods>") und Zeichen ("char <code>") nach overlay_input.txt und haelt die
  * Tastatur vom Spiel fern: Fenstermeldungen (WM_KEY*, WM_CHAR) und DirectInput-Tastatur (Zustand geleert, Puffer
- * verworfen). F8 bleibt wirksam.
+ * verworfen). F8 bleibt wirksam. Damit auch Steam nichts sieht, faengt das Steuerpult die Tasten schon vorher mit
+ * einem Low-Level-Hook ab (python/overlay_kbd.py) - in Empire selbst ginge das nicht: hat ein Prozess eine
+ * DirectInput-Tastatur erfasst, ruft Windows seine Low-Level-Hooks nicht auf. Die Fensterbehandlung hier ist die
+ * Rueckfallebene, falls der Hook des Steuerpults nicht laeuft.
+ *
+ * Verschieben/Groesse: Das Steuerpult schreibt im erweiterten Kopf (flags bit 2) Position, Greiffeld (Verschieben)
+ * und Griff (Groesse, unten rechts). Ziehen am Greiffeld verschiebt das Bild sofort (DLL), Ziehen am Griff zeigt
+ * einen Rahmen; beim Loslassen meldet die DLL "moved <x> <y>" bzw. "resize <w> <h>" - das Steuerpult merkt sich
+ * Position/Groesse und zeichnet in der neuen Groesse.
  */
 #define WIN32_LEAN_AND_MEAN
 #define COBJMACROS
@@ -135,13 +143,18 @@ static D3DCOLOR kind_color(wchar_t k)
 }
 
 /* ---------- F8 und Bild des Steuerpults (aufgeklapptes Overlay) ---------- */
-#define PANEL_MAX_W 1024
-#define PANEL_MAX_H 768
+#define PANEL_MAX_W 1400
+#define PANEL_MAX_H 1000
+#define PANEL_MIN_W 480
+#define PANEL_MIN_H 300
 static LONG g_f8_count;
 static int g_f8_down;
 static DWORD *g_panel_px;
 static int g_panel_w, g_panel_h;
 static DWORD g_panel_seq = 0xFFFFFFFF, g_panel_flags, g_panel_tick, g_panel_check;
+/* Lage des Panels: Position im Bildpuffer (-1 = Standard unten links), Greiffeld und Groessengriff (Panel-Koordinaten) */
+static int g_pos_x = -1, g_pos_y = -1, g_hdr_x = -100000, g_hdr_y = -100000;
+static int g_grip_mv[4], g_grip_sz[4];
 
 static void poll_keys(void)
 {
@@ -167,6 +180,16 @@ static void read_panel(void)
 	DWORD head[5];
 	if (fread(head, 4, 5, f) == 5 && head[0] == 0x564F4245 /* 'EBOV' */ && head[3] != g_panel_seq) {
 		DWORD w = head[1], h = head[2];
+		if (head[4] & 4) {                         /* erweiterter Kopf: Position, Greiffeld, Groessengriff */
+			int ext[10];
+			if (fread(ext, 4, 10, f) != 10) { fclose(f); return; }
+			if (ext[0] != g_hdr_x || ext[1] != g_hdr_y) {  /* nur neue Vorgabe uebernehmen (nicht beim Ziehen springen) */
+				g_hdr_x = ext[0]; g_hdr_y = ext[1];
+				g_pos_x = ext[0]; g_pos_y = ext[1];
+			}
+			memcpy(g_grip_mv, ext + 2, sizeof g_grip_mv);
+			memcpy(g_grip_sz, ext + 6, sizeof g_grip_sz);
+		}
 		if ((head[4] & 1) && w && h && w <= PANEL_MAX_W && h <= PANEL_MAX_H) {
 			if (!g_panel_px) g_panel_px = (DWORD *)malloc((size_t)PANEL_MAX_W * PANEL_MAX_H * 4);
 			if (g_panel_px && fread(g_panel_px, 4, (size_t)w * h, f) == (size_t)w * h) {
@@ -205,6 +228,7 @@ static DWORD g_last_drag;
  * nur die staerkste melden (sonst dreifach) */
 static LONG g_wheel_src[3];
 static volatile LONG g_kbd;              /* Tastatur gehoert dem Overlay (Feld hat den Fokus) */
+static int g_moving, g_sizing, g_grab_x, g_grab_y, g_new_w, g_new_h;
 static int g_d3dcur_hidden, g_d3dcur_prev;
 static HCURSOR g_arrow;
 
@@ -230,14 +254,58 @@ static int cursor_in_panel(int *px, int *py)
 	return bx >= g_px0 && bx < g_px0 + g_pw && by >= g_py0 && by < g_py0 + g_ph;
 }
 
+static int in_rect(const int *r, int x, int y) { return r[2] > r[0] && x >= r[0] && x < r[2] && y >= r[1] && y < r[3]; }
+
+static int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+/* Zeiger je nach Stelle: Verschieben, Groesse, sonst Pfeil */
+static void set_cursor_at(int x, int y)
+{
+	static HCURSOR c_move, c_size;
+	if (!g_arrow) g_arrow = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
+	if (!c_move) c_move = LoadCursorW(NULL, (LPCWSTR)IDC_SIZEALL);
+	if (!c_size) c_size = LoadCursorW(NULL, (LPCWSTR)IDC_SIZENWSE);
+	if (g_moving || (!g_sizing && in_rect(g_grip_mv, x, y))) SetCursor(c_move);
+	else if (g_sizing || in_rect(g_grip_sz, x, y)) SetCursor(c_size);
+	else SetCursor(g_arrow);
+}
+
 /* einmal je Bild: Klicks/Ziehen erkennen und melden */
 static void poll_mouse(void)
 {
-	if (!panel_open() || !g_pw) { InterlockedExchange(&g_over, 0); g_dragging = 0; g_lbtn = 0; return; }
+	if (!panel_open() || !g_pw) {
+		InterlockedExchange(&g_over, 0); g_dragging = 0; g_lbtn = 0; g_moving = 0; g_sizing = 0; return;
+	}
 	int x, y, inside = cursor_in_panel(&x, &y);
 	SHORT k = GetAsyncKeyState(VK_LBUTTON);
 	int down = (k & 0x8000) != 0;
-	if (down && !g_lbtn && inside) {
+	int bx = (int)g_px0 + x, by = (int)g_py0 + y;              /* Zeiger im Bildpuffer */
+	if (g_moving || g_sizing) {                                /* Verschieben / Groesse aendern laeuft */
+		if (down) {
+			if (g_moving) {
+				g_pos_x = bx - g_grab_x;
+				g_pos_y = by - g_grab_y;
+			} else {
+				g_new_w = clampi(x + g_grab_x, PANEL_MIN_W, PANEL_MAX_W < g_bbw - (int)g_px0 ? PANEL_MAX_W : g_bbw - (int)g_px0);
+				g_new_h = clampi(y + g_grab_y, PANEL_MIN_H, PANEL_MAX_H < g_bbh - (int)g_py0 ? PANEL_MAX_H : g_bbh - (int)g_py0);
+			}
+		} else {
+			if (g_moving) emit("moved", (int)g_px0, (int)g_py0, 0);
+			else emit("resize", g_new_w, g_new_h, 0);
+			g_moving = g_sizing = 0;
+		}
+		g_lbtn = down;
+		InterlockedExchange(&g_over, 1);
+		set_cursor_at(x, y);
+		return;
+	}
+	if (down && !g_lbtn && inside && in_rect(g_grip_mv, x, y)) {
+		g_moving = 1; g_grab_x = x; g_grab_y = y;
+		g_pos_x = (int)g_px0; g_pos_y = (int)g_py0;
+	} else if (down && !g_lbtn && inside && in_rect(g_grip_sz, x, y)) {
+		g_sizing = 1; g_grab_x = (int)g_pw - x; g_grab_y = (int)g_ph - y;
+		g_new_w = (int)g_pw; g_new_h = (int)g_ph;
+	} else if (down && !g_lbtn && inside) {
 		emit("down", x, y, 0);
 		g_dragging = 1;
 	} else if (!down && !g_lbtn && (k & 1) && inside) {      /* kurzer Klick zwischen zwei Bildern */
@@ -259,11 +327,8 @@ static void poll_mouse(void)
 		if (labs(v) > labs(wheel)) wheel = v;
 	}
 	if (wheel && inside) emit("wheel", x, y, wheel);
-	InterlockedExchange(&g_over, inside || g_dragging);
-	if (inside) {
-		if (!g_arrow) g_arrow = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
-		SetCursor(g_arrow);
-	}
+	InterlockedExchange(&g_over, inside || g_dragging || g_moving || g_sizing);
+	if (inside || g_moving || g_sizing) set_cursor_at(x, y);
 }
 
 static int key_mods(void)
@@ -277,10 +342,12 @@ static LRESULT CALLBACK hk_wndproc(HWND h, UINT m, WPARAM w, LPARAM l)
 		switch (m) {
 		case WM_KEYDOWN: case WM_SYSKEYDOWN: {
 			if (w == VK_F8) break;                         /* F8 klappt weiter auf/zu */
+			if (w == VK_SHIFT || w == VK_CONTROL || w == VK_MENU || w == VK_CAPITAL || w == VK_LWIN || w == VK_RWIN)
+				return 0;                                  /* reine Umschalttasten: nichts zu melden */
 			emit("key", (int)w, key_mods(), 0);
 			BYTE ks[256];
 			WCHAR buf[8];
-			if (GetKeyboardState(ks) && !(ks[VK_CONTROL] & 0x80)) {
+			if (GetKeyboardState(ks) && (!(ks[VK_CONTROL] & 0x80) || (ks[VK_MENU] & 0x80))) {   /* AltGr = Strg+Alt */
 				int n = ToUnicode((UINT)w, (UINT)((l >> 16) & 0xFF), ks, buf, 8, 0);
 				for (int i = 0; i < n; i++)
 					if (buf[i] >= 32 && buf[i] != 127) emit("char", buf[i], 0, 0);
@@ -293,8 +360,9 @@ static LRESULT CALLBACK hk_wndproc(HWND h, UINT m, WPARAM w, LPARAM l)
 		}
 	}
 	if (g_over && m == WM_SETCURSOR) {
-		if (!g_arrow) g_arrow = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
-		SetCursor(g_arrow);
+		int cx = 0, cy = 0;
+		cursor_in_panel(&cx, &cy);
+		set_cursor_at(cx, cy);
 		return TRUE;                                       /* Pfeil statt Fadenkreuz */
 	}
 	if (g_over) {
@@ -393,6 +461,8 @@ static HRESULT WINAPI hk_GetDeviceData(IDirectInputDevice8W *d, DWORD cbo, LPDID
 	return hr;
 }
 
+static void quad(IDirect3DDevice9 *dev, float x, float y, float w, float h, DWORD c);
+
 /* aufgeklapptes Overlay: Bild des Steuerpults zeichnen (eigene Deckkraft im Bild) */
 static void draw_panel(IDirect3DDevice9 *dev)
 {
@@ -423,7 +493,11 @@ static void draw_panel(IDirect3DDevice9 *dev)
 	IDirect3DDevice9_GetViewport(dev, &vp);
 	float w = (float)g_panel_w, h = (float)g_panel_h;
 	float x0 = (float)vp.X + 14.0f, y0 = (float)(vp.Y + vp.Height) - h - 180.0f;
-	if (y0 < (float)vp.Y + 10.0f) y0 = (float)vp.Y + 10.0f;
+	if (g_pos_x != -1 || g_pos_y != -1) { x0 = (float)vp.X + g_pos_x; y0 = (float)vp.Y + g_pos_y; }
+	if (x0 > (float)(vp.X + vp.Width) - w) x0 = (float)(vp.X + vp.Width) - w;     /* immer ganz im Bild */
+	if (y0 > (float)(vp.Y + vp.Height) - h) y0 = (float)(vp.Y + vp.Height) - h;
+	if (x0 < (float)vp.X) x0 = (float)vp.X;
+	if (y0 < (float)vp.Y) y0 = (float)vp.Y;
 	g_px0 = x0; g_py0 = y0; g_pw = w; g_ph = h;            /* fuer die Maus */
 	g_bbw = (int)vp.Width; g_bbh = (int)vp.Height;
 
@@ -463,6 +537,21 @@ static void draw_panel(IDirect3DDevice9 *dev)
 	float X = x0 - 0.5f, Y = y0 - 0.5f;
 	TVtx v[4] = { {X, Y, 0, 1, c, 0, 0}, {X + w, Y, 0, 1, c, 1, 0}, {X, Y + h, 0, 1, c, 0, 1}, {X + w, Y + h, 0, 1, c, 1, 1} };
 	IDirect3DDevice9_DrawPrimitiveUP(dev, D3DPT_TRIANGLESTRIP, 2, v, sizeof(TVtx));
+	if (g_sizing) {                                /* neuer Umriss beim Groesse-Aendern */
+		IDirect3DDevice9_SetTexture(dev, 0, NULL);
+		IDirect3DDevice9_SetFVF(dev, D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
+		IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+		IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+		IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+		IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
+		float nw = (float)g_new_w, nh = (float)g_new_h;
+		DWORD gc = D3DCOLOR_ARGB(230, 214, 178, 96), fc = D3DCOLOR_ARGB(60, 214, 178, 96);
+		quad(dev, x0, y0, nw, nh, fc);
+		quad(dev, x0, y0, nw, 2, gc);
+		quad(dev, x0, y0 + nh - 2, nw, 2, gc);
+		quad(dev, x0, y0, 2, nh, gc);
+		quad(dev, x0 + nw - 2, y0, 2, nh, gc);
+	}
 	if (g_over) {
 		CURSORINFO ci;
 		ci.cbSize = sizeof ci;
