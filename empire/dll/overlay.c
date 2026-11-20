@@ -1,20 +1,22 @@
 /*
- * overlay.c - Feldherr-Overlay im Spielbild (Stufe 1: nur Anzeige "Overlay aktiv").
+ * overlay.c - Feldherr-Overlay im Spielbild: die letzten Meldungen des Feldherrn unten links.
  *
- * Empire zeichnet mit Direct3D 9 (32 Bit). Ueber ein eigenes, unsichtbares Hilfsgeraet holen wir die Adressen der
- * Funktionen Present und Reset in d3d9.dll und leiten die FUNKTIONEN selbst um (Hot-Patch: Windows-DLLs haben vor
- * jeder Funktion 5 Fuellbytes und am Anfang "mov edi,edi" genau dafuer). Die Methodentabellen liegen unter
- * Windows 10/11 pro Geraet im Speicher - sie umzubiegen erreicht das Geraet des Spiels nicht; die Funktionen sind
- * dagegen fuer alle Geraete dieselben.
+ * Empire zeichnet mit Direct3D 9 (32 Bit). Ueber ein eigenes, unsichtbares Hilfsgeraet holen wir die Adresse der
+ * Funktion Present und leiten die FUNKTION selbst um (Hot-Patch: Windows-DLLs haben vor jeder Funktion 5 Fuellbytes
+ * und am Anfang "mov edi,edi" genau dafuer; ist dort schon ein anderer Hook, z. B. Steam-Overlay oder die
+ * Windows-Kompatibilitaetsschicht, haengen wir uns davor). Die Methodentabellen liegen unter Windows 10/11 pro
+ * Geraet im Speicher - sie umzubiegen erreicht das Geraet des Spiels nicht.
  *
- * Gezeichnet wird unmittelbar vor Present gezielt in den Bildpuffer (eigene BeginScene/EndScene; in EndScene zu
- * zeichnen koennte in einem Zwischendurchgang wie einer Schattenkarte landen): ein halbtransparentes Feld unten
- * links und Text mit D3DXCreateFontW aus d3dx9_40.dll (bringt das Spiel mit). Die D3DX-Header gibt es nicht im Windows
- * SDK - die paar benoetigten Methoden von ID3DXFont sind unten von Hand beschrieben.
+ * KEINE dauerhaften Grafikobjekte: Schrift und Statusblock hielten Referenzen auf das Geraet; beim Wechsel Vollbild
+ * <-> Fenster legt Empire ein neues Geraet an, das alte blieb dadurch am Leben bzw. die Kompatibilitaetsschicht
+ * raeumte es weg, waehrend wir noch Referenzen hielten -> Freeze/Absturz (Schlacht 2026-11-20 12:45, im Test
+ * nachgestellt). Deshalb: Text mit Windows-GDI in ein normales Speicherbild (nur wenn sich die Meldungen aendern),
+ * je Bild daraus eine Textur und einen Statusblock anlegen, zeichnen, sofort wieder freigeben. Damit braucht es
+ * weder Reset- noch CreateDevice-Umleitung und kein D3DX.
  *
- * Sicherheit: alles in __try/__except. Tritt eine Ausnahme auf, schaltet sich das Overlay ab und protokolliert das;
- * das Spiel laeuft weiter. Abschaltbar ohne Neubau: in ai_bridge/config.lua "overlay = false" (wird alle 2 s
- * gelesen).
+ * Gezeichnet wird unmittelbar vor Present gezielt in den Bildpuffer (eigene BeginScene/EndScene).
+ * Sicherheit: alles in __try/__except. Tritt eine Ausnahme auf, schaltet sich das Overlay ab und protokolliert das.
+ * Abschaltbar ohne Neubau: in ai_bridge/config.lua "overlay = false" (wird alle 2 s gelesen).
  */
 #define WIN32_LEAN_AND_MEAN
 #define COBJMACROS
@@ -25,45 +27,17 @@
 
 void ov_log(const char *fmt, ...);   /* aus empire_bridge.c */
 
-/* ---------- D3DX: ID3DXFont von Hand (Reihenfolge wie d3dx9core.h) ---------- */
-typedef struct XFont XFont;
-typedef struct XFontVtbl {
-	void *QueryInterface, *AddRef;
-	ULONG (WINAPI *Release)(XFont *);
-	void *GetDevice, *GetDescA, *GetDescW, *GetTextMetricsA, *GetTextMetricsW, *GetDC, *GetGlyphData,
-	     *PreloadCharacters, *PreloadGlyphs, *PreloadTextA, *PreloadTextW, *DrawTextA;
-	INT (WINAPI *DrawTextW)(XFont *, void *sprite, LPCWSTR s, INT n, LPRECT r, DWORD fmt, D3DCOLOR c);
-	HRESULT (WINAPI *OnLostDevice)(XFont *);
-	HRESULT (WINAPI *OnResetDevice)(XFont *);
-} XFontVtbl;
-struct XFont { const XFontVtbl *v; };
-typedef HRESULT (WINAPI *PFN_CreateFontW)(IDirect3DDevice9 *, INT, UINT, UINT, UINT, BOOL, DWORD, DWORD, DWORD,
-                                          DWORD, LPCWSTR, XFont **);
 typedef IDirect3D9 *(WINAPI *PFN_Direct3DCreate9)(UINT);
 
 /* ---------- Hook-Typen (vtable-Indizes von IDirect3DDevice9) ---------- */
-#define VT_RESET     16
 #define VT_PRESENT   17
-typedef HRESULT (WINAPI *PFN_Reset)(IDirect3DDevice9 *, D3DPRESENT_PARAMETERS *);
 typedef HRESULT (WINAPI *PFN_Present)(IDirect3DDevice9 *, const RECT *, const RECT *, HWND, const RGNDATA *);
 
-static PFN_Reset g_orig_reset;       /* = Funktion + 2 (hinter "mov edi,edi") */
 static PFN_Present g_orig_present;
 
 static volatile LONG g_enabled = 1;        /* 0 = abgeschaltet (config oder Fehler) */
 static LONG g_present_seen, g_draws;
-static IDirect3DDevice9 *g_dev;            /* Geraet, fuer das Schrift/Statusblock angelegt sind */
-static XFont *g_font;
-static IDirect3DStateBlock9 *g_sb;
-static PFN_CreateFontW g_createfont;
 static DWORD g_cfg_tick;
-
-static void release_resources(void)
-{
-	if (g_font) { g_font->v->Release(g_font); g_font = NULL; }
-	if (g_sb) { IDirect3DStateBlock9_Release(g_sb); g_sb = NULL; }
-	g_dev = NULL;
-}
 
 static void read_config(void)
 {
@@ -83,6 +57,7 @@ static void read_config(void)
 }
 
 typedef struct { float x, y, z, rhw; DWORD c; } Vtx;
+typedef struct { float x, y, z, rhw; DWORD c; float u, v; } TVtx;
 
 /* ---------- Meldungen des Feldherrn (ai_bridge/overlay.txt, siehe python/empire_general/overlay_feed.py) ---------- */
 #define FEED_MAX 14
@@ -91,6 +66,7 @@ static wchar_t g_lines[FEED_MAX][FEED_LEN];
 static wchar_t g_kinds[FEED_MAX];
 static int g_nlines;
 static DWORD g_feed_tick;
+static int g_text_dirty = 1;
 
 static void read_feed(void)
 {
@@ -125,11 +101,13 @@ static void read_feed(void)
 		p = e + 1;
 	}
 	g_nlines = count;
+	g_text_dirty = 1;
 }
 
 static D3DCOLOR kind_color(wchar_t k)
 {
 	switch (k) {
+	case L'+': return D3DCOLOR_ARGB(255, 170, 225, 150);   /* aktueller Plan meiner Armee */
 	case L'>': return D3DCOLOR_ARGB(255, 150, 200, 255);   /* eigener Befehl */
 	case L'*': return D3DCOLOR_ARGB(255, 245, 238, 220);   /* Antwort des Feldherrn */
 	case L'!': return D3DCOLOR_ARGB(255, 255, 170, 80);    /* Warnung */
@@ -137,32 +115,122 @@ static D3DCOLOR kind_color(wchar_t k)
 	}
 }
 
+/* ---------- Text als Bild (GDI, kein Grafikobjekt) ---------- */
+
+#define TEX_H 512
+#define BOX_W 640
+#define TITLE_H 26
+#define LINE_H 21
+static HDC g_dc;
+static DWORD *g_bits;            /* BOX_W x TEX_H, 32 Bit, oben zuerst */
+static int g_text_h;
+
+static void render_text(void)
+{
+	if (!g_dc) {
+		g_dc = CreateCompatibleDC(NULL);
+		BITMAPINFO bi = {0};
+		bi.bmiHeader.biSize = sizeof bi.bmiHeader;
+		bi.bmiHeader.biWidth = BOX_W;
+		bi.bmiHeader.biHeight = -TEX_H;
+		bi.bmiHeader.biPlanes = 1;
+		bi.bmiHeader.biBitCount = 32;
+		HBITMAP bmp = CreateDIBSection(g_dc, &bi, DIB_RGB_COLORS, (void **)&g_bits, NULL, 0);
+		SelectObject(g_dc, bmp);
+		HFONT f = CreateFontW(-17, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+		                      CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+		SelectObject(g_dc, f);
+		SetBkMode(g_dc, TRANSPARENT);
+		SetTextColor(g_dc, RGB(255, 255, 255));
+	}
+	if (!g_bits) return;
+	int n = g_nlines ? g_nlines : 1;
+	g_text_h = TITLE_H + n * LINE_H + 10;
+	if (g_text_h > TEX_H) g_text_h = TEX_H;
+	memset(g_bits, 0, (size_t)BOX_W * TEX_H * 4);
+	TextOutW(g_dc, 14, 4, L"Feldherr", 8);
+	if (!g_nlines) {
+		const wchar_t *t = L"Overlay aktiv - noch keine Meldungen des Feldherrn";
+		TextOutW(g_dc, 14, TITLE_H, t, (int)wcslen(t));
+	}
+	/* Folgezeilen einer Meldung beginnen mit Leerzeichen: buendig unter dem Text nach der Uhrzeit ausrichten
+	 * (Proportionalschrift - Leerzeichen allein treffen die Kante nicht) */
+	SIZE stamp = {0};
+	GetTextExtentPoint32W(g_dc, L"00:00  ", 7, &stamp);
+	for (int i = 0; i < g_nlines; i++) {
+		const wchar_t *t = g_lines[i];
+		int x = 14;
+		if (t[0] == L' ') {
+			while (*t == L' ') t++;
+			x += stamp.cx;
+		}
+		TextOutW(g_dc, x, TITLE_H + i * LINE_H, t, (int)wcslen(t));
+	}
+	GdiFlush();
+	g_text_dirty = 0;
+}
+
+static void quad(IDirect3DDevice9 *dev, float x, float y, float w, float h, DWORD c)
+{
+	Vtx v[4] = { {x, y, 0, 1, c}, {x + w, y, 0, 1, c}, {x, y + h, 0, 1, c}, {x + w, y + h, 0, 1, c} };
+	IDirect3DDevice9_DrawPrimitiveUP(dev, D3DPT_TRIANGLESTRIP, 2, v, sizeof(Vtx));
+}
+
+/* Zeilen row0..row0+rows des Textbilds an (x, y) zeichnen, eingefaerbt mit c */
+static void text_rows(IDirect3DDevice9 *dev, float x, float y, int row0, int rows, DWORD c)
+{
+	float u1 = 1.0f, v0 = (float)row0 / g_text_h, v1 = (float)(row0 + rows) / g_text_h;   /* Textur = BOX_W x g_text_h */
+	float X = x - 0.5f, Y = y - 0.5f, W = (float)BOX_W, H = (float)rows;
+	TVtx v[4] = { {X, Y, 0, 1, c, 0, v0}, {X + W, Y, 0, 1, c, u1, v0}, {X, Y + H, 0, 1, c, 0, v1},
+	              {X + W, Y + H, 0, 1, c, u1, v1} };
+	IDirect3DDevice9_DrawPrimitiveUP(dev, D3DPT_TRIANGLESTRIP, 2, v, sizeof(TVtx));
+}
+
 static void draw(IDirect3DDevice9 *dev)
 {
-	if (dev != g_dev) {                    /* erstes Bild oder anderes Geraet */
-		release_resources();
-		g_dev = dev;
-	}
-	if (!g_font && g_createfont)
-		g_createfont(dev, 17, 0, FW_SEMIBOLD, 1, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
-		             DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI", &g_font);
-	if (!g_sb) IDirect3DDevice9_CreateStateBlock(dev, D3DSBT_ALL, &g_sb);
-	if (!g_sb) return;
 	read_feed();
+	if (g_text_dirty) render_text();
+	if (!g_bits || !g_text_h) return;
+
+	/* je Bild anlegen und am Ende freigeben - nichts haelt das Geraet ueber das Bild hinaus fest */
+	IDirect3DStateBlock9 *sb = NULL;
+	IDirect3DTexture9 *tex = NULL;
+	if (FAILED(IDirect3DDevice9_CreateStateBlock(dev, D3DSBT_ALL, &sb)) || !sb) return;
+	/* nur so gross wie noetig; dynamisch direkt in den Grafikspeicher (schnell), sonst verwaltet (immer moeglich) */
+	DWORD lockflags = D3DLOCK_DISCARD;
+	if (FAILED(IDirect3DDevice9_CreateTexture(dev, BOX_W, g_text_h, 1, D3DUSAGE_DYNAMIC, D3DFMT_A8R8G8B8,
+	                                          D3DPOOL_DEFAULT, &tex, NULL)) || !tex) {
+		tex = NULL;
+		lockflags = 0;
+		if (FAILED(IDirect3DDevice9_CreateTexture(dev, BOX_W, g_text_h, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED,
+		                                          &tex, NULL)))
+			tex = NULL;
+	}
+	if (tex) {
+		D3DLOCKED_RECT lr;
+		if (SUCCEEDED(IDirect3DTexture9_LockRect(tex, 0, &lr, NULL, lockflags))) {
+			for (int y = 0; y < g_text_h; y++) {
+				DWORD *dst = (DWORD *)((BYTE *)lr.pBits + (size_t)y * lr.Pitch);
+				const DWORD *src = g_bits + (size_t)y * BOX_W;
+				for (int x = 0; x < BOX_W; x++)
+					dst[x] = ((src[x] & 0xFF) << 24) | 0x00FFFFFF;   /* weiss auf schwarz: Helligkeit = Deckkraft */
+			}
+			IDirect3DTexture9_UnlockRect(tex, 0);
+		} else {
+			IDirect3DTexture9_Release(tex);
+			tex = NULL;
+		}
+	}
 
 	D3DVIEWPORT9 vp;
 	IDirect3DDevice9_GetViewport(dev, &vp);
-	const float line_h = 21.0f, title_h = 26.0f;
-	int n = g_nlines ? g_nlines : 1;
-	float w = 640.0f, h = title_h + n * line_h + 10.0f;
+	float w = (float)BOX_W, h = (float)g_text_h;
 	if (w > (float)vp.Width - 28.0f) w = (float)vp.Width - 28.0f;
 	float x0 = (float)vp.X + 14.0f, y0 = (float)(vp.Y + vp.Height) - h - 180.0f;   /* ueber der Einheitenleiste */
 
-	IDirect3DStateBlock9_Capture(g_sb);
+	IDirect3DStateBlock9_Capture(sb);
 	IDirect3DDevice9_SetPixelShader(dev, NULL);
 	IDirect3DDevice9_SetVertexShader(dev, NULL);
-	IDirect3DDevice9_SetTexture(dev, 0, NULL);
-	IDirect3DDevice9_SetFVF(dev, D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
 	IDirect3DDevice9_SetRenderState(dev, D3DRS_ZENABLE, FALSE);
 	IDirect3DDevice9_SetRenderState(dev, D3DRS_LIGHTING, FALSE);
 	IDirect3DDevice9_SetRenderState(dev, D3DRS_FOGENABLE, FALSE);
@@ -170,39 +238,57 @@ static void draw(IDirect3DDevice9 *dev)
 	IDirect3DDevice9_SetRenderState(dev, D3DRS_STENCILENABLE, FALSE);
 	IDirect3DDevice9_SetRenderState(dev, D3DRS_SCISSORTESTENABLE, FALSE);
 	IDirect3DDevice9_SetRenderState(dev, D3DRS_ALPHATESTENABLE, FALSE);
+	IDirect3DDevice9_SetRenderState(dev, D3DRS_SRGBWRITEENABLE, FALSE);
 	IDirect3DDevice9_SetRenderState(dev, D3DRS_ALPHABLENDENABLE, TRUE);
+	IDirect3DDevice9_SetRenderState(dev, D3DRS_BLENDOP, D3DBLENDOP_ADD);
 	IDirect3DDevice9_SetRenderState(dev, D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
 	IDirect3DDevice9_SetRenderState(dev, D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
 	IDirect3DDevice9_SetRenderState(dev, D3DRS_COLORWRITEENABLE, 0xF);
+	IDirect3DDevice9_SetTextureStageState(dev, 1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+	IDirect3DDevice9_SetTextureStageState(dev, 1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+
+	/* Feld und goldene Leiste (ohne Textur) */
+	IDirect3DDevice9_SetTexture(dev, 0, NULL);
+	IDirect3DDevice9_SetFVF(dev, D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
 	IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
 	IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
 	IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
 	IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
+	quad(dev, x0, y0, w, h, D3DCOLOR_ARGB(170, 20, 22, 28));
+	quad(dev, x0, y0, 4, h, D3DCOLOR_ARGB(220, 196, 160, 80));
 
-	DWORD bg = D3DCOLOR_ARGB(170, 20, 22, 28), border = D3DCOLOR_ARGB(220, 196, 160, 80);
-	Vtx box[4] = { {x0, y0, 0, 1, bg}, {x0 + w, y0, 0, 1, bg}, {x0, y0 + h, 0, 1, bg}, {x0 + w, y0 + h, 0, 1, bg} };
-	IDirect3DDevice9_DrawPrimitiveUP(dev, D3DPT_TRIANGLESTRIP, 2, box, sizeof(Vtx));
-	Vtx bar[4] = { {x0, y0, 0, 1, border}, {x0 + 4, y0, 0, 1, border}, {x0, y0 + h, 0, 1, border}, {x0 + 4, y0 + h, 0, 1, border} };
-	IDirect3DDevice9_DrawPrimitiveUP(dev, D3DPT_TRIANGLESTRIP, 2, bar, sizeof(Vtx));
-
-	if (g_font) {
-		const DWORD fmt = DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOCLIP;
-		RECT r = { (LONG)x0 + 14, (LONG)y0 + 5, (LONG)(x0 + w) - 8, (LONG)(y0 + title_h) };
-		g_font->v->DrawTextW(g_font, NULL, L"Feldherr", -1, &r, fmt, D3DCOLOR_ARGB(255, 214, 178, 96));
-		if (!g_nlines) {
-			RECT q = { (LONG)x0 + 14, (LONG)(y0 + title_h), (LONG)(x0 + w) - 8, (LONG)(y0 + title_h + line_h) };
-			g_font->v->DrawTextW(g_font, NULL, L"Overlay aktiv \x2013 noch keine Meldungen des Feldherrn", -1, &q, fmt,
-			                     D3DCOLOR_ARGB(255, 175, 175, 175));
-		}
-		for (int i = 0; i < g_nlines; i++) {
-			RECT q = { (LONG)x0 + 14, (LONG)(y0 + title_h + i * line_h), (LONG)(x0 + w) - 8,
-			           (LONG)(y0 + title_h + (i + 1) * line_h) };
-			g_font->v->DrawTextW(g_font, NULL, g_lines[i], -1, &q, fmt, kind_color(g_kinds[i]));
+	/* Text: Textur (Deckkraft) x Farbe je Zeile */
+	if (tex) {
+		IDirect3DDevice9_SetTexture(dev, 0, (IDirect3DBaseTexture9 *)tex);
+		IDirect3DDevice9_SetFVF(dev, D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1);
+		IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_TEXCOORDINDEX, 0);
+		IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
+		IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+		IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+		IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+		IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
+		IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+		IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
+		IDirect3DDevice9_SetSamplerState(dev, 0, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+		IDirect3DDevice9_SetSamplerState(dev, 0, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+		IDirect3DDevice9_SetSamplerState(dev, 0, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+		IDirect3DDevice9_SetSamplerState(dev, 0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+		IDirect3DDevice9_SetSamplerState(dev, 0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+		IDirect3DDevice9_SetSamplerState(dev, 0, D3DSAMP_SRGBTEXTURE, FALSE);
+		text_rows(dev, x0, y0, 0, TITLE_H, D3DCOLOR_ARGB(255, 214, 178, 96));
+		int n = g_nlines ? g_nlines : 1;
+		for (int i = 0; i < n; i++) {
+			int r0 = TITLE_H + i * LINE_H, rows = (i == n - 1) ? g_text_h - r0 : LINE_H;
+			if (rows <= 0) break;
+			text_rows(dev, x0, y0 + r0, r0, rows,
+			          g_nlines ? kind_color(g_kinds[i]) : D3DCOLOR_ARGB(255, 175, 175, 175));
 		}
 	}
-	IDirect3DStateBlock9_Apply(g_sb);
+	IDirect3DStateBlock9_Apply(sb);
+	IDirect3DStateBlock9_Release(sb);
+	if (tex) IDirect3DTexture9_Release(tex);
 	if (InterlockedIncrement(&g_draws) == 1)
-		ov_log("Overlay: erstes Bild gezeichnet (Viewport %lux%lu, Schrift %s)", vp.Width, vp.Height, g_font ? "ok" : "FEHLT");
+		ov_log("Overlay: erstes Bild gezeichnet (Viewport %lux%lu, Text %s)", vp.Width, vp.Height, tex ? "ok" : "FEHLT");
 }
 
 /* Vor Present: in den Bildpuffer zeichnen, Renderziel und Ausschnitt des Spiels danach wiederherstellen. */
@@ -236,20 +322,6 @@ static HRESULT WINAPI hk_Present(IDirect3DDevice9 *dev, const RECT *a, const REC
 		}
 	}
 	return g_orig_present(dev, a, b, w, r);
-}
-
-static HRESULT WINAPI hk_Reset(IDirect3DDevice9 *dev, D3DPRESENT_PARAMETERS *pp)
-{
-	__try {
-		if (g_font) g_font->v->OnLostDevice(g_font);
-		if (g_sb) { IDirect3DStateBlock9_Release(g_sb); g_sb = NULL; }
-	} __except (EXCEPTION_EXECUTE_HANDLER) {}
-	HRESULT hr = g_orig_reset(dev, pp);
-	__try {
-		if (SUCCEEDED(hr) && g_font) g_font->v->OnResetDevice(g_font);
-	} __except (EXCEPTION_EXECUTE_HANDLER) {}
-	ov_log("Overlay: Reset (%s)", SUCCEEDED(hr) ? "ok" : "fehlgeschlagen");
-	return hr;
 }
 
 static BYTE *jmp_target(BYTE *at) { return at + 5 + *(LONG *)(at + 1); }
@@ -307,16 +379,12 @@ static LRESULT CALLBACK dummy_wndproc(HWND h, UINT m, WPARAM w, LPARAM l) { retu
 int overlay_install(void)
 {
 	int ok = 0;
-	void *present_fn = NULL, *reset_fn = NULL;
+	void *present_fn = NULL;
 	__try {
 		HMODULE d3d9 = GetModuleHandleW(L"d3d9.dll");
 		if (!d3d9) d3d9 = LoadLibraryW(L"d3d9.dll");
-		HMODULE d3dx = GetModuleHandleW(L"d3dx9_40.dll");
-		if (!d3dx) d3dx = LoadLibraryW(L"d3dx9_40.dll");
 		PFN_Direct3DCreate9 create = d3d9 ? (PFN_Direct3DCreate9)GetProcAddress(d3d9, "Direct3DCreate9") : NULL;
-		g_createfont = d3dx ? (PFN_CreateFontW)GetProcAddress(d3dx, "D3DXCreateFontW") : NULL;
 		if (!create) { ov_log("Overlay: d3d9.dll/Direct3DCreate9 nicht gefunden"); return 0; }
-		if (!g_createfont) ov_log("Overlay: D3DXCreateFontW nicht gefunden - nur Feld ohne Text");
 
 		WNDCLASSW wc = {0};
 		wc.lpfnWndProc = dummy_wndproc;
@@ -343,21 +411,16 @@ int overlay_install(void)
 				continue;
 			}
 			void **vt = *(void ***)dev;
-			if (!present_fn) { present_fn = vt[VT_PRESENT]; reset_fn = vt[VT_RESET]; }
+			if (!present_fn) present_fn = vt[VT_PRESENT];
 			IDirect3DDevice9_Release(dev);
 			if (present_fn) break;
 		}
 		IDirect3D9_Release(d3d);
 		DestroyWindow(hwnd);
 		UnregisterClassW(wc.lpszClassName, wc.hInstance);
-		if (present_fn && reset_fn) {
-			/* Reset zuerst: ohne Reset-Umleitung darf Present nicht zeichnen (Schrift muesste beim Geraeteverlust
-			 * freigegeben werden) */
-			g_orig_reset = (PFN_Reset)hotpatch((BYTE *)reset_fn, (void *)hk_Reset, "Reset");
-			if (g_orig_reset) {
-				g_orig_present = (PFN_Present)hotpatch((BYTE *)present_fn, (void *)hk_Present, "Present");
-				ok = g_orig_present != NULL;
-			}
+		if (present_fn) {
+			g_orig_present = (PFN_Present)hotpatch((BYTE *)present_fn, (void *)hk_Present, "Present");
+			ok = g_orig_present != NULL;
 		}
 	} __except (EXCEPTION_EXECUTE_HANDLER) {
 		ov_log("Overlay: Ausnahme 0x%08lx bei der Einrichtung - kein Overlay", GetExceptionCode());
