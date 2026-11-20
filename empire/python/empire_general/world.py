@@ -132,7 +132,10 @@ class World:
     def update(self, st: dict) -> None:
         self.time = float(st.get("game_time") or 0.0)
         self.phase = st.get("phase") or "?"
-        if self.phase == "Deployed" and self.battle_start is None:
+        if st.get("battle_start") is not None:
+            # vom Battle-Skript gemeldet - stimmt auch, wenn der Feldherr erst mitten in der Schlacht startet
+            self.battle_start = float(st["battle_start"])
+        elif self.phase == "Deployed" and self.battle_start is None:
             self.battle_start = self.time
         self.seq = int(st.get("seq") or 0)
         self.player_alliance = st.get("player_alliance")

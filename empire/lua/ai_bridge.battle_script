@@ -191,7 +191,7 @@ end
 local function write_state()
 	AIB.seq = AIB.seq + 1
 	local st = {
-		seq = AIB.seq, game_time = now(), phase = AIB.phase,
+		seq = AIB.seq, game_time = now(), phase = AIB.phase, battle_start = AIB.battle_start,
 		player_alliance = AIB.player, player_alliance_source = AIB.player_source,
 		control = AIB.cfg.control, controlled_alliances = arr(),
 		last_order_seq = AIB.last_order_seq,
@@ -374,6 +374,8 @@ function AIB_Phase(event)
 	AIB.phase = n
 	log("Phase: " .. tostring(n))
 	if n == "Deployed" then
+		-- Schlachtbeginn (Spieluhr) fuer die Schlachtzeit des Feldherrn - auch wenn er erst spaeter startet
+		if AIB.battle_start == nil then AIB.battle_start = now() end
 		local ok, err = pcall(apply_control)
 		if not ok then log("apply_control FEHLER: " .. tostring(err)) end
 	end

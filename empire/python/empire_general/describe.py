@@ -193,7 +193,22 @@ def lane_lines(w: World, alliance: int, ls: list) -> list[str]:
         inside = [u for u in w.side(alliance) if firelanes.blocking(u, l)]
         tgt = f"{l.target.name} (#{l.target.id})" if l.target else "?"
         who = ", ".join(u.name + (" [player]" if u.manual else "") for u in inside) or "clear"
-        out.append(f"  {l.gun.name} -> {tgt}, {l.length:.0f} m: {'IN IT NOW: ' + who if inside else 'clear'}")
+        line = f"  {l.gun.name} -> {tgt}, {l.length:.0f} m: {'IN IT NOW: ' + who if inside else 'clear'}"
+        fr = w.frame(alliance)
+        if fr is not None:
+            # Lage im Bezugssystem der Armee: welche Plaetze vor dem Geschuetz (bis zur eigenen Front) im Kanal liegen -
+            # damit das Modell z. B. Generaele nicht "32 m hinter der Front" genau vor das Geschuetz stellt
+            gun_back = fr.front - fr.depth(l.gun.pos)
+            lat = [fr.lateral(l.start)]
+            if gun_back > 0:
+                k = min(gun_back / max(fr.depth(l.end) - fr.depth(l.start), 1e-6), 1.0)
+                lat.append(fr.lateral((l.start[0] + (l.end[0] - l.start[0]) * k, l.start[1] + (l.end[1] - l.start[1]) * k)))
+            lo, hi = min(lat) - firelanes.HALF_M, max(lat) + firelanes.HALF_M
+            line += (f" | on your side it covers right_m {lo:+.0f}..{hi:+.0f} from the gun ({gun_back:.0f} m behind your "
+                     "front) forward: no places there between the gun and the front")
+            if lo < 0 < hi and gun_back > 0:
+                line += (f" (also ref 'front' with right_m 0 and back_m 0..{gun_back:.0f} is IN it)")
+        out.append(line)
     return out
 
 

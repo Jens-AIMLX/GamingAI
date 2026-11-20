@@ -214,7 +214,9 @@ class Side:
         self.last_pos: dict[int, tuple[float, float]] = {}
         self.plans = 0
         self.immediate: list[tuple[float, str]] = []   # Sofortbefehle aus dem Chat: (Spielzeit, Text)
-        self.ack_since: float | None = None             # naechster Plan nach diesem Zeitpunkt bestaetigt den Befehl
+        # Chat-Befehle, die noch auf eine Bestaetigung warten: jeder wird einzeln bestaetigt, vom ersten Plan, dessen
+        # Bericht ihn enthielt (Schlacht 2026-11-20 10:35: zweiter Befehl 9 s spaeter verdraengte die erste Bestaetigung)
+        self.pending_acks: list[tuple[float, str]] = []
         # Uebergabe per Chat: Plaene bis HANDOVER_WINDOW_S nach dem neuesten Chat-Befehl duerfen Einheiten uebergeben
         # (der erste Plan danach vergisst es manchmal - Schlacht 2026-11-20 07:48), jede Einheit aber nur EINMAL je
         # Befehl: sonst gaebe der Feldherr eine Einheit, die der Spieler per Hotkey zurueckgeholt hat, erneut ab
@@ -259,9 +261,12 @@ class Side:
                     self.log({"type": "warning", "alliance": self.alliance, "t": t_game,
                               "text": "Uebergabe im Plan ignoriert (kein neuer Chat-Befehl): "
                                       f"an Spieler {plan.give_to_player}, zurueck {plan.take_from_player}"})
-                if kind == "plan" and self.ack_since is not None and seen >= self.ack_since:
-                    self.ack_since = None
-                    self.log({"type": "info", "t": t_game, "text": f"Feldherr Allianz {self.alliance} zum Befehl: {plan.intent}"})
+                acked = [o for o in self.pending_acks if o[0] <= seen] if kind == "plan" else []
+                if acked:
+                    self.pending_acks = [o for o in self.pending_acks if o[0] > seen]
+                    which = " und ".join(f"'{txt}'" for _, txt in acked)
+                    self.log({"type": "info", "t": t_game,
+                              "text": f"Feldherr Allianz {self.alliance} zum Befehl {which}: {plan.intent}"})
             except Exception as e:  # Planung darf die Schlacht nie stoppen: Executor macht mit dem alten Plan weiter
                 self.error = str(e)
                 self.log({"type": "error", "alliance": self.alliance, "t": t_game, "error": str(e)})
@@ -397,6 +402,7 @@ def main() -> int:
             s = side_for(a)
             if cmd == "order_clear":
                 s.immediate.clear()
+                s.pending_acks.clear()
                 s.force_plan = True
                 log({"type": "info", "t": w.time, "text": f"Sofortbefehle an die {label} (Allianz {a}) aufgehoben"})
                 return out
@@ -404,7 +410,7 @@ def main() -> int:
                 return out
             s.immediate = (s.immediate + [(w.time, text.strip())])[-5:]
             s.force_plan = True
-            s.ack_since = w.time
+            s.pending_acks.append((w.time, text.strip()))
             s.handover_since = w.time
             s.handover_done.clear()
             log({"type": "order", "alliance": a, "t": w.time, "text": text.strip()})

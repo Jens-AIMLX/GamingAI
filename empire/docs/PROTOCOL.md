@@ -27,7 +27,7 @@ return {
 
 ```json
 {
-  "seq": 42, "game_time": 612.3, "phase": "Deployed",
+  "seq": 42, "game_time": 612.3, "phase": "Deployed", "battle_start": 40.2,
   "player_alliance": 1, "player_alliance_source": "auswahl",
   "control": "enemy", "controlled_alliances": [2],
   "last_order_seq": 7,

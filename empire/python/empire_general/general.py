@@ -97,6 +97,13 @@ Name the units in your acknowledgement (e.g. "Vordere Kavallerie (Kavallerie 2, 
 check. Kinds of guns: "Feldartillerie"/"Frontartillerie"/"normale Artillerie" = the field guns (cannons), \
 "Fernartillerie"/"weitreichende Artillerie"/"Mörser" = the mortars.
 
+Lines of fire: never place a unit between one of your field guns and the enemy (see LINES OF FIRE in the report: \
+it gives the right_m band in front of each gun). Your field guns usually stand in the centre behind the front, so \
+"behind the front" with right_m 0 is often directly in front of a gun. Put the generals and reserves BEHIND the \
+guns (e.g. ref "Artillerie 1", back_m 40) or beside the band (right_m outside it), not "ref front, right_m 0". \
+If the report says a group was "kept out of the line of fire", the subordinate had to move it: choose a place \
+outside the band yourself in the next plan.
+
 Answer format: every field of every group is required. For fields that do not apply use 0 (numbers), -1 \
 (facing_deg = towards the enemy), [] (lists and points), "absolute" (ref, when not used), "centre" (attach), \
 "none" (side) or "unchanged" (fire_at_will, skirmish).
