@@ -418,9 +418,25 @@ do
 			local ok_local, is_local = pcall(function() return conditions.FactionIsLocal(context) end)
 			if ok_local and is_local then run("turn") end
 		end)
+		-- Takt: Spiel-Timer (einmalig, im Handler neu gestellt); arbeitet Aktionen und den Knopf im Steuerpult/Overlay
+		-- (ai_bridge/campaign_request.txt) ab. Nach dem Laden lief er erst ab dem naechsten Zugbeginn (2026-11-20 23:1x)
+		-- - beim Laden gestellte Timer gehen offenbar verloren. Deshalb wird er bei NewSession, UICreated, WorldCreated,
+		-- Zugbeginn und bei Aktionen (wenn seit 3 s kein Tick kam) neu gestellt. Jedes Stellen bekommt einen eigenen
+		-- Namen; nur der zuletzt gestellte zaehlt - eine aeltere Kette laeuft aus, es laufen nie zwei parallel.
+		local TICK = "empire_bridge_tick_"
+		local tick_seq, tick_name, tick_seen = 0, nil, -1e9
+		local function arm()
+			tick_seq = tick_seq + 1
+			local name = TICK .. tick_seq
+			local ok = pcall(function() es.game_interface:add_time_trigger(name, 1) end)
+			if ok and es.game_interface then tick_name = name end
+		end
 		-- Aktionen im eigenen Zug merken; der Takt erfasst, sobald 2 s Ruhe ist (eine Klickfolge = eine Erfassung)
 		local dirty_at = nil
-		local function mark() dirty_at = os.time() end
+		local function mark()
+			dirty_at = os.time()
+			if os.time() - tick_seen > 3 then arm() end      -- Takt tot? neu stellen
+		end
 		for _, name in ipairs({ "HudRefresh", "ComponentLClickUp", "PanelClosedCampaign", "CharacterSelected",
 		                        "SettlementSelected", "FortSelected", "UnitSelectedCampaign", "MovementPointsExhausted",
 		                        "MultiTurnMove", "BuildingConstructionIssuedByPlayer", "RecruitmentItemIssuedByPlayer",
@@ -428,19 +444,21 @@ do
 		                        "GarrisonResidenceCaptured", "UnitTrained", "BuildingCompleted", "ResearchCompleted" }) do
 			pcall(es.AddEventCallBack, name, mark)
 		end
-		-- Takt: Spiel-Timer (einmalig, im Handler neu gestellt); prueft auch den Knopf im Steuerpult/Overlay
-		-- (ai_bridge/campaign_request.txt)
-		local TICK = "empire_bridge_tick"
-		local tick_seen = 0
-		local function arm()
-			pcall(function() es.game_interface:add_time_trigger(TICK, 1) end)
-		end
+		-- Nach dem Laden (mitten im eigenen Zug) sofort voll erfassen - nicht erst beim naechsten Zugbeginn
+		local need_initial = true
 		pcall(es.AddEventCallBack, "TimeTrigger", function(context)
 			local okn, name = pcall(function() return context.string end)
-			if not okn or name ~= TICK then return end
+			if not okn or name ~= tick_name then return end      -- fremder Timer oder aeltere Kette: auslaufen lassen
 			tick_seen = os.time()
 			pcall(function()
-				if exists("campaign_request.txt") then
+				if need_initial then
+					local okp, mine = pcall(CampaignUI.IsPlayersTurn)
+					if okp and mine then
+						need_initial = false
+						dirty_at = nil
+						run("load")
+					end
+				elseif exists("campaign_request.txt") then
 					os.remove(P .. "campaign_request.txt")
 					dirty_at = nil
 					run("request")
@@ -451,9 +469,12 @@ do
 			end)
 			arm()
 		end)
-		pcall(es.AddEventCallBack, "WorldCreated", arm)
-		pcall(es.AddEventCallBack, "FactionTurnStart", function()          -- Takt am Leben halten (z. B. nach Laden)
-			if os.time() - tick_seen > 5 then arm() end
+		for _, name in ipairs({ "NewSession", "UICreated", "WorldCreated", "FactionTurnStart" }) do
+			pcall(es.AddEventCallBack, name, function() arm() end)
+		end
+		pcall(es.AddEventCallBack, "FactionTurnStart", function(context)    -- Zugbeginn erfasst selbst
+			local ok_local, is_local = pcall(function() return conditions.FactionIsLocal(context) end)
+			if ok_local and is_local then need_initial = false end
 		end)
 	end
 end
