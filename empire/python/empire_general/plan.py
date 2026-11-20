@@ -61,7 +61,7 @@ class GroupOrder(BaseModel):
     shape: Literal["line", "column", "none"] = Field(default="line", description="move: line = side by side across facing_deg, "
                                                                                  "column = one behind the other, none = every unit to target_point")
     spacing_m: float = Field(default=6.0, description="move: line = gap between neighbouring units' fronts; column = distance between unit centres")
-    waypoints: list[list[float]] | None = Field(default=None, description="move: [[x, z], ...] to pass through first (e.g. round a flank)")
+    waypoints: list[list[float]] | None = Field(default=None, description="move or attack: [[x, z], ...] to pass through first (e.g. round a flank, then attack)")
     target_unit: int | None = Field(default=None, description="attack: enemy unit id")
     run: bool = Field(default=False, description="true only for charges and urgent moves: running tires the men")
     on_target_lost: Literal["nearest", "halt"] = Field(default="nearest", description="attack: when the target dies or routs")
@@ -126,7 +126,8 @@ class WireGroup(BaseModel):
     facing_deg: float = Field(description="move: front direction on arrival, 0 = north, 90 = east; -1 = towards the enemy army")
     shape: Literal["line", "column", "none"]
     spacing_m: float = Field(description="move: gap between units in a line / distance in a column, e.g. 6")
-    waypoints: list[list[float]] = Field(description="move: [[x, z], ...] to pass first; [] = straight there")
+    waypoints: list[list[float]] = Field(description="move or attack: [[x, z], ...] to pass first (flank march, "
+                                                     "envelopment, attack from the side or rear); [] = straight there")
     target_unit: int = Field(description="attack: enemy unit id; otherwise 0")
     run: bool = Field(description="true only for charges and urgent moves")
     on_target_lost: Literal["nearest", "halt"]

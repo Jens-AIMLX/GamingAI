@@ -105,6 +105,8 @@ class Executor:
             else:
                 for uid in ids:
                     gr.places[uid] = mine[uid].pos
+                if g.task == "attack" and g.waypoints:
+                    self._attack_route(gr, g, [mine[i] for i in ids], w)
             # Feuer-/Plaenkler-Einstellungen einmal je Plan
             for uid in ids:
                 bid = mine[uid].bid
@@ -115,6 +117,26 @@ class Executor:
             self.groups.append(gr)
         # Neue Befehle sofort erzwingen
         self.last.clear()
+
+    @staticmethod
+    def _attack_route(gr: GroupRun, g: GroupOrder, units: list[Unit], w: World) -> None:
+        """attack mit Wegpunkten (Umfassung, Flankenangriff): jede Einheit laeuft erst die Wegpunkte ab - versetzt um
+        ihren Abstand zur Gruppenmitte, damit die Gruppe nicht auf einen Punkt zusammenlaeuft - und greift dann an.
+        Der Feldherr plant alle paar Sekunden neu und schickt dieselben Wegpunkte wieder: Wegpunkte, an denen die
+        Einheit schon vorbei ist (der naechste Punkt / das Ziel ist von ihr aus naeher als vom Wegpunkt), entfallen."""
+        c = centroid(units)
+        tgt = w.units.get(g.target_unit) if g.target_unit is not None else None
+        for u in units:
+            off = (u.x - c[0], u.z - c[1]) if c else (0.0, 0.0)
+            wps = [(float(p[0]) + off[0], float(p[1]) + off[1]) for p in g.waypoints or [] if len(p) >= 2]
+            end = tgt.pos if tgt else None
+            while wps:
+                nxt = wps[1] if len(wps) > 1 else end
+                if nxt is None or dist(u.pos, nxt) > dist(wps[0], nxt):
+                    break
+                wps.pop(0)
+            if wps:
+                gr.stages[u.id] = wps
 
     def _resolve_relative(self, plan: Plan, w: World, mine: dict[int, Unit], fr: Frame | None
                           ) -> dict[int, tuple[tuple[float, float], float, dict[int, tuple[float, float]]]]:
@@ -146,6 +168,10 @@ class Executor:
                     base_d, base_l = fr.front, 0.0
                 elif key == "rear":
                     base_d, base_l = fr.rear, 0.0
+                    if g.back_m < 0:
+                        self.plan_warnings.append(
+                            f"group '{g.name}': ref 'rear' with back_m {g.back_m:.0f} = {-g.back_m:.0f} m IN FRONT of "
+                            "your rearmost units, i.e. towards the enemy. To pull units back use a POSITIVE back_m")
                 else:
                     ru = w.find(g.ref)
                     if ru is None:
@@ -318,6 +344,11 @@ class Executor:
                 step = o.keep_range_m - d + 15
                 return ("goto", (u.x + dx * step, u.z + dz * step), True)
         if o.task == "attack":
+            route = g.stages.get(u.id)
+            while route and dist(u.pos, route[0]) < ARRIVE_M * 2:
+                route.pop(0)
+            if route:
+                return ("goto", route[0], o.run)        # erst ueber die Wegpunkte, dann angreifen
             tgt = w.units.get(o.target_unit) if o.target_unit is not None else None
             if not tgt or not tgt.alive:
                 if o.on_target_lost == "halt":
@@ -426,6 +457,8 @@ class Executor:
                     s += f", {left:.0f} m to go" if left > ARRIVE_M else ", in place"
                 elif o.task == "attack" and o.target_unit is not None:
                     s += f" #{o.target_unit}"
+                    if g.stages.get(uid):
+                        s += f", marching via waypoints ({len(g.stages[uid])} left) before attacking"
                 if uid in self.cease_fire:
                     s += " (HOLDING FIRE: own troops within 50 m of the target)"
                 out[uid] = s

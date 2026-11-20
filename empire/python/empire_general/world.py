@@ -10,7 +10,7 @@ import math
 from collections import deque
 from dataclasses import dataclass, field
 
-from .units import role_of
+from .units import is_cavalry, role_of
 
 HISTORY_S = 12.0
 
@@ -194,8 +194,16 @@ class World:
             return self.units.get(int(r.lstrip("#")))
         return self.by_name(r)
 
+    DETACHED_M = 80.0   # weiter als das vor dem Median des Hauptkoerpers = losgeloest, zaehlt nicht zur Front
+
     def frame(self, alliance: int) -> Frame | None:
         own = self.side(alliance) or self.side(alliance, alive=False)
+        # Hauptkoerper = Infanterie und Artillerie. Kavallerie und Generaele zaehlen nicht: eine angreifende Kavallerie
+        # tief beim Feind hat sonst die "Front" mitgezogen, und Gruppen "32 m hinter der Front" (die Generaele) liefen
+        # ihr hinterher (Schlacht 2026-11-20 06:55).
+        own_all = own
+        core = [u for u in own if not is_cavalry(u.role)]
+        own = core or own
         c, ce = centroid(own), centroid(self.enemies(alliance))
         if not c or not ce:
             return None
@@ -209,9 +217,11 @@ class World:
             if abs((mean - face + 180) % 360 - 180) < 45:
                 face = mean
         f = Frame(origin=c, face=face, front=0.0, rear=0.0)
-        ds = [f.depth(u.pos) for u in own]
-        f.front, f.rear = max(ds), min(ds)
-        ls = [f.lateral(u.pos) for u in own]
+        ds = sorted(f.depth(u.pos) for u in own)
+        median = ds[len(ds) // 2]
+        # losgeloeste Einheiten weit vor dem Hauptkoerper (vorgeschickter Fluegel, Verfolger) bilden keine Front
+        f.front, f.rear = max(d for d in ds if d <= median + self.DETACHED_M), min(ds)
+        ls = [f.lateral(u.pos) for u in own_all]
         f.left, f.right_edge = min(ls), max(ls)
         return f
 

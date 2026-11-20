@@ -48,7 +48,8 @@ def _frame_lines(w: World, alliance: int, fr: Frame | None) -> list[str]:
         return []
     fp = fr.point(fr.front, 0.0)
     out = [f"ARMY FRAME: your army faces {fr.face:.0f} deg ({compass(fr.face)}, towards the enemy). Your current front "
-           f"line (foremost units) runs through ({fp[0]:.0f},{fp[1]:.0f}); your rearmost units stand "
+           f"line (foremost infantry/artillery of your main body; cavalry and units far ahead do not count) runs "
+           f"through ({fp[0]:.0f},{fp[1]:.0f}); the rearmost infantry/artillery ('rear') stand "
            f"{fr.front - fr.rear:.0f} m behind it. 'Behind' = away from the enemy, 'right' = right as your troops "
            "face the enemy. Positions in [ ] below are in this frame - use ref/back_m/right_m to place groups."]
     us = [u for u in w.side(alliance)]

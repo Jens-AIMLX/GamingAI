@@ -502,6 +502,8 @@ def main() -> int:
             if s.ready is not None:
                 plan, s.ready = s.ready, None
                 s.ex.set_plan(plan, w)
+                for wtxt in s.ex.plan_warnings:
+                    log({"type": "warning", "alliance": a, "t": w.time, "text": wtxt})
                 s.deploying = False
                 s.plans += 1
                 if plan.note:
