@@ -15,6 +15,20 @@ do
 		return false
 	end
 
+	-- Fehler der Erfassung sichtbar machen: ai_bridge/campaign_capture.error (neueste zuerst ueberschrieben) und
+	-- empire_bridge_log.txt
+	local function log_error(msg)
+		pcall(function()
+			local stamp = os.date("%Y-%m-%d %H:%M:%S")
+			local f = io.open(P .. "campaign_capture.error", "a")
+			f:write(stamp, "  ", tostring(msg), "\n")
+			f:close()
+			local g = io.open("empire_bridge_log.txt", "a")
+			g:write(stamp, "  [lua] Kampagnen-Erfassung: ", tostring(msg), "\n")
+			g:close()
+		end)
+	end
+
 	-- ---------- JSON ----------
 	local ESC = { ['"'] = '\\"', ['\\'] = '\\\\', ['\n'] = '\\n', ['\r'] = '\\r', ['\t'] = '\\t' }
 	local function jstr(s)
@@ -344,20 +358,42 @@ do
 		S.events = events
 		events = {}
 
-		local out = {}
-		enc(S, out)
-		local f = io.open(P .. "campaign_state.json.tmp", "w")
-		if f then
-			f:write(table.concat(out))
+		-- je Hauptteil einzeln kodieren: ein Teil, der scheitert, fehlt dann nur (mit Fehler), statt der ganzen Datei
+		-- (2026-11-20 22:39: alle Schritte liefen, aber keine Datei entstand - Fehler blieb im pcall unsichtbar)
+		local parts, enc_errors = {}, {}
+		for k, v in pairs(S) do
+			local part = {}
+			local ok, err = pcall(enc, v, part)
+			if ok then
+				parts[#parts + 1] = jstr(tostring(k)) .. ":" .. table.concat(part)
+			else
+				enc_errors[#enc_errors + 1] = tostring(k) .. ": " .. tostring(err)
+			end
+		end
+		if #enc_errors > 0 then
+			local part = {}
+			enc(enc_errors, part)
+			parts[#parts + 1] = '"encode_errors":' .. table.concat(part)
+			log_error("Kodieren: " .. table.concat(enc_errors, " | "))
+		end
+		local f, ferr = io.open(P .. "campaign_state.json.tmp", "w")
+		if not f then
+			log_error("campaign_state.json.tmp nicht schreibbar: " .. tostring(ferr))
+		else
+			f:write("{", table.concat(parts, ","), "}")
 			f:close()
 			os.remove(P .. "campaign_state.json")
-			os.rename(P .. "campaign_state.json.tmp", P .. "campaign_state.json")
+			local okr, rerr = os.rename(P .. "campaign_state.json.tmp", P .. "campaign_state.json")
+			if not okr then log_error("Umbenennen fehlgeschlagen: " .. tostring(rerr)) end
 		end
 		prog:close()
 	end
 
 	if ok_es and es and es.AddEventCallBack then
 		for _, name in ipairs(EVENTS) do pcall(es.AddEventCallBack, name, on_event(name)) end
-		pcall(es.AddEventCallBack, "FactionTurnStart", function(context) pcall(capture, context) end)
+		pcall(es.AddEventCallBack, "FactionTurnStart", function(context)
+			local ok, err = pcall(capture, context)
+			if not ok then log_error("Abbruch: " .. tostring(err)) end
+		end)
 	end
 end
