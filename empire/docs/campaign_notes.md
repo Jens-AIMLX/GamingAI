@@ -76,9 +76,18 @@ Mit den richtigen Argumenten liefen alle Aufrufe (21:23).
 | `TradeInfo()`, `PrestigeDetails()`, `MonarchyInfo()` | Waren/Preise/Handelspartner, Prestige, Monarch/Erben |
 | `RetrieveVisibleEnitityDetails()` | nur Siedlungen am Bildschirm (Labels) – **keine feindlichen Armeen** |
 
-Noch offen: feindliche Armeen (z. B. `RetrieveFactionMilitaryForceLists(<feind>, true)` – richtiger Argumenttyp,
-aber ungeprüft und ohne Nebel des Krieges), Regionsdetails (Siedlungen, Gebäude, Ordnung je Region),
-Staatskasse (evtl. `conditions.FactionTreasury` im Ereigniskontext).
+### Probe 3 (2026-11-20 21:29 / 21:42) – alle Aufrufe ohne Absturz
+
+| Aufruf | Felder |
+|---|---|
+| `InitialiseRegionInfoDetails(SettlementsRegion(SettlementAddress))` | `Name`, `OwningFactionKey`, `Population(Number)`, `PopulationChange/Growth`, `UpperOrder`/`LowerOrder` (öffentliche Ordnung je Klasse, Liste von Faktoren mit `Total`, `Positive`, `Tooltip`), `UpperTax`/`LowerTax(Percentage)`, `Taxed`, `Wealth`, `WealthChange`, `RegionWealth`, `TownWealth`, `ReligionKey`, `ReligiousBreakdown`, `Governor`, `Settlement`, `Theatre`, `AdministrationCostPercentage` |
+| `InitialiseGovernmentDetails()` | `Treasury` (Staatskasse), `AnnualIncome`, `ArmyUpkeep`, `NavyUpkeep`, `TaxIncomeTotal`, `Trade`, `Policing`, `OtherIncome`, `Government`, `DatabaseKey`, `Home`, `Ministers`, `MinisterPool`, `Popularity(Status)`, `Population`, `Prestige`, `Prosperity`, `Religion`, `NextElections`, `Governorships`, `Theatres` |
+| Armee-Eintrag (eigene wie fremde) | zusätzlich `Units` (Anzahl Einheiten), `Soldiers`, `Title`, `Traits`, `Transitioning` |
+| `RetrieveFactionMilitaryForceLists(<feind>, true)` | funktioniert mit dem Schlüssel jeder Fraktion (26 Armeen der Maratha) – **liefert auch Armeen im Nebel des Krieges** (Maratha-Armee in Guatemala war für den Spieler zu Zugbeginn nicht sichtbar) |
+
+`RegionsPublicOrders` braucht `details.Region.Region` – das Feld gibt es nicht; die Ordnung steht direkt in
+`UpperOrder`/`LowerOrder`. Die Zusammensetzung einer Armee (welche Einheiten) liefert die Liste nicht, nur die
+Anzahl; dafür gäbe es `RetrieveContainedEntitiesFromCharacter(character, target)` (Austauschfenster), ungeprüft.
 
 ## Nächste Schritte
 
