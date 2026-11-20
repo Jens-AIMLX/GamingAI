@@ -37,6 +37,7 @@ KEYRING_USER = "anthropic-api-key"
 
 sys.path.insert(0, str(HERE))
 from empire_bridge import EmpireBridge  # noqa: E402
+import overlay_panel  # noqa: E402
 
 MODELS = {
     "Claude Opus 5.5 (stärkstes Modell)": ("claude", "claude-opus-5-5"),
@@ -129,6 +130,15 @@ class App(tk.Tk):
         self._load_strategy(self.s.get("strategy", "standard"))
         self._loading = False
         self._write_runtime()
+        # Overlay im Spielbild: kompakte Ansicht DIESER Daten (overlay_panel.py), F8 im Spiel schaltet sie
+        self._ov_view = 0               # 0 = zugeklappt, 1..5 = Tab overlay_panel.TABS[view - 1]
+        self._ov_f8: int | None = None  # zuletzt gesehene F8-Zaehlung der DLL
+        self._ov_seq = 0
+        self._ov_open_written = False
+        self._ov_last = 0.0
+        self._ov_key = None
+        self._ov_dir: Path | None = None
+        self.nb.bind("<<NotebookTabChanged>>", lambda e: self._overlay_follow_tab())
         self._pump_job = self.after(150, self._pump)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -753,8 +763,80 @@ class App(tk.Tk):
         if self.proc and self.proc.poll() is None:
             self.proc.terminate()
 
+    # ---------- Overlay im Spielbild ----------
+    def _overlay_dir(self) -> Path | None:
+        if self._ov_dir is None:
+            try:
+                self._ov_dir = EmpireBridge().dir
+            except (Exception, SystemExit):
+                return None
+        return self._ov_dir
+
+    def _overlay_follow_tab(self) -> None:
+        """Tab-Wechsel im Fenster: das offene Overlay zeigt denselben Tab (Befehle/Strategie/Aufstellung/Einheiten)."""
+        if self._ov_view:
+            try:
+                self._ov_view = self.nb.index(self.nb.select()) + 2
+            except tk.TclError:
+                pass
+
+    def _overlay_data(self) -> "overlay_panel.PanelData":
+        model = self.model_var.get().split(" (")[0].replace("Claude ", "")
+        control = next((label for label, val in SIDES if val == self.control_var.get()), self.control_var.get())
+        log = self.log.get("end-200l", "end").splitlines()
+        units = [tuple(self.units_tree.item(i, "values")) for i in self.units_tree.get_children()]
+        return overlay_panel.PanelData(
+            tab=overlay_panel.TABS[self._ov_view - 1], running=bool(self.proc and self.proc.poll() is None),
+            status=self.run_status.cget("text"), model=model, effort=self.effort_var.get(),
+            interval=f"Plan alle {self.int_var.get()}/{self.cint_var.get()} s", control=control,
+            log=[l for l in log if l.strip()], orders_player=self.orders_player_text.get("1.0", "end").strip(),
+            orders_enemy=self.orders_enemy_text.get("1.0", "end").strip(), strategy_name=self.strat_var.get(),
+            strategy=self.strat_text.get("1.0", "end").strip(), deploy=self.deploy_text.get("1.0", "end").strip(),
+            units_side=self.units_side.get(), units=units, units_info=self.units_info.cget("text"),
+            active_orders=self.active_orders.cget("text"), chat_target=self.chat_target.get(),
+            chat_text=self.chat_var.get(), hotkeys={k: v.get() for k, v in self.hotkey_vars.items()})
+
+    def _overlay_tick(self) -> None:
+        """F8-Zaehlung der DLL lesen, bei offenem Overlay das Bild neu zeichnen (bei Aenderung, sonst jede Sekunde -
+        so erkennt die DLL, dass das Steuerpult noch lebt)."""
+        d = self._overlay_dir()
+        if d is None:
+            return
+        n = overlay_panel.read_f8(d / "overlay_keys.txt")
+        if n is not None:
+            if self._ov_f8 is None:
+                self._ov_f8 = n                     # alter Stand beim Start: nicht reagieren
+            elif n != self._ov_f8:
+                presses = n - self._ov_f8 if n > self._ov_f8 else n   # Empire neu gestartet: Zaehler von vorn
+                self._ov_f8 = n
+                for _ in range(presses):
+                    self._ov_view = (self._ov_view + 1) % (len(overlay_panel.TABS) + 1)
+        expanded = bool(self._ov_view) and self.overlay_var.get()
+        path = d / "overlay_panel.bin"
+        if not expanded:
+            if self._ov_open_written:
+                self._ov_seq += 1
+                overlay_panel.write_panel(None, path, self._ov_seq, False)
+                self._ov_open_written = False
+            return
+        data = self._overlay_data()
+        key = repr(data)
+        now = time.monotonic()
+        if key != self._ov_key or now - self._ov_last > 1.0:
+            self._ov_key, self._ov_last = key, now
+            self._ov_seq += 1
+            overlay_panel.write_panel(overlay_panel.render(data), path, self._ov_seq, True)
+            self._ov_open_written = True
+
     def _pump(self) -> None:
         self._pump_n = getattr(self, "_pump_n", 0) + 1
+        if self._pump_n % 2 == 0:   # etwa alle 0,3 s: Overlay im Spielbild
+            try:
+                self._overlay_tick()
+            except Exception as e:  # das Overlay darf das Steuerpult nie stoeren
+                if not getattr(self, "_ov_err_shown", False):
+                    self._ov_err_shown = True
+                    self._append(f"Overlay: {e}\n")
         if self._pump_n % 7 == 0:   # etwa jede Sekunde: Einheitenliste und aktive Befehle aktualisieren
             try:
                 self._refresh_units()

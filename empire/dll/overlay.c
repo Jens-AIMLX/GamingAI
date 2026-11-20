@@ -17,6 +17,11 @@
  * Gezeichnet wird unmittelbar vor Present gezielt in den Bildpuffer (eigene BeginScene/EndScene).
  * Sicherheit: alles in __try/__except. Tritt eine Ausnahme auf, schaltet sich das Overlay ab und protokolliert das.
  * Abschaltbar ohne Neubau: in ai_bridge/config.lua "overlay = false" (wird alle 2 s gelesen).
+ *
+ * Aufgeklappt (F8): das Steuerpult zeichnet seine kompakte Oberflaeche selbst (python/overlay_panel.py) nach
+ * ai_bridge/overlay_panel.bin; die DLL zeigt dieses Bild statt der Meldungsleiste. F8-Druecke zaehlt die DLL
+ * (nur wenn Empire im Vordergrund ist) und meldet sie in ai_bridge/overlay_keys.txt. Schreibt das Steuerpult
+ * 5 s lang kein neues Bild (geschlossen/abgestuerzt), faellt die Anzeige auf die Meldungsleiste zurueck.
  */
 #define WIN32_LEAN_AND_MEAN
 #define COBJMACROS
@@ -24,6 +29,7 @@
 #include <d3d9.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 void ov_log(const char *fmt, ...);   /* aus empire_bridge.c */
 
@@ -115,6 +121,135 @@ static D3DCOLOR kind_color(wchar_t k)
 	}
 }
 
+/* ---------- F8 und Bild des Steuerpults (aufgeklapptes Overlay) ---------- */
+#define PANEL_MAX_W 1024
+#define PANEL_MAX_H 768
+static LONG g_f8_count;
+static int g_f8_down;
+static DWORD *g_panel_px;
+static int g_panel_w, g_panel_h;
+static DWORD g_panel_seq = 0xFFFFFFFF, g_panel_flags, g_panel_tick, g_panel_check;
+
+static void poll_keys(void)
+{
+	HWND fg = GetForegroundWindow();
+	DWORD pid = 0;
+	if (fg) GetWindowThreadProcessId(fg, &pid);
+	int down = (GetAsyncKeyState(VK_F8) & 0x8000) != 0;
+	if (down && !g_f8_down && pid == GetCurrentProcessId()) {
+		g_f8_count++;
+		FILE *f = fopen("ai_bridge\\overlay_keys.txt", "w");
+		if (f) { fprintf(f, "f8=%ld\n", g_f8_count); fclose(f); }
+	}
+	g_f8_down = down;
+}
+
+static void read_panel(void)
+{
+	DWORD now = GetTickCount();
+	if (now - g_panel_check < 150) return;
+	g_panel_check = now;
+	FILE *f = fopen("ai_bridge\\overlay_panel.bin", "rb");
+	if (!f) return;
+	DWORD head[5];
+	if (fread(head, 4, 5, f) == 5 && head[0] == 0x564F4245 /* 'EBOV' */ && head[3] != g_panel_seq) {
+		DWORD w = head[1], h = head[2];
+		if ((head[4] & 1) && w && h && w <= PANEL_MAX_W && h <= PANEL_MAX_H) {
+			if (!g_panel_px) g_panel_px = (DWORD *)malloc((size_t)PANEL_MAX_W * PANEL_MAX_H * 4);
+			if (g_panel_px && fread(g_panel_px, 4, (size_t)w * h, f) == (size_t)w * h) {
+				g_panel_w = (int)w;
+				g_panel_h = (int)h;
+				g_panel_seq = head[3];
+				g_panel_flags = head[4];
+				g_panel_tick = now;
+			}
+		} else {
+			g_panel_seq = head[3];
+			g_panel_flags = head[4];
+			g_panel_tick = now;
+		}
+	}
+	fclose(f);
+}
+
+static int panel_open(void)
+{
+	return (g_panel_flags & 1) && g_panel_px && g_panel_w && GetTickCount() - g_panel_tick < 5000;
+}
+
+/* aufgeklapptes Overlay: Bild des Steuerpults zeichnen (eigene Deckkraft im Bild) */
+static void draw_panel(IDirect3DDevice9 *dev)
+{
+	IDirect3DStateBlock9 *sb = NULL;
+	IDirect3DTexture9 *tex = NULL;
+	DWORD lockflags = D3DLOCK_DISCARD;
+	if (FAILED(IDirect3DDevice9_CreateStateBlock(dev, D3DSBT_ALL, &sb)) || !sb) return;
+	if (FAILED(IDirect3DDevice9_CreateTexture(dev, g_panel_w, g_panel_h, 1, D3DUSAGE_DYNAMIC, D3DFMT_A8R8G8B8,
+	                                          D3DPOOL_DEFAULT, &tex, NULL)) || !tex) {
+		tex = NULL;
+		lockflags = 0;
+		if (FAILED(IDirect3DDevice9_CreateTexture(dev, g_panel_w, g_panel_h, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED,
+		                                          &tex, NULL)))
+			tex = NULL;
+	}
+	if (!tex) { IDirect3DStateBlock9_Release(sb); return; }
+	D3DLOCKED_RECT lr;
+	if (FAILED(IDirect3DTexture9_LockRect(tex, 0, &lr, NULL, lockflags))) {
+		IDirect3DTexture9_Release(tex);
+		IDirect3DStateBlock9_Release(sb);
+		return;
+	}
+	for (int y = 0; y < g_panel_h; y++)
+		memcpy((BYTE *)lr.pBits + (size_t)y * lr.Pitch, g_panel_px + (size_t)y * g_panel_w, (size_t)g_panel_w * 4);
+	IDirect3DTexture9_UnlockRect(tex, 0);
+
+	D3DVIEWPORT9 vp;
+	IDirect3DDevice9_GetViewport(dev, &vp);
+	float w = (float)g_panel_w, h = (float)g_panel_h;
+	float x0 = (float)vp.X + 14.0f, y0 = (float)(vp.Y + vp.Height) - h - 180.0f;
+	if (y0 < (float)vp.Y + 10.0f) y0 = (float)vp.Y + 10.0f;
+
+	IDirect3DStateBlock9_Capture(sb);
+	IDirect3DDevice9_SetPixelShader(dev, NULL);
+	IDirect3DDevice9_SetVertexShader(dev, NULL);
+	IDirect3DDevice9_SetRenderState(dev, D3DRS_ZENABLE, FALSE);
+	IDirect3DDevice9_SetRenderState(dev, D3DRS_LIGHTING, FALSE);
+	IDirect3DDevice9_SetRenderState(dev, D3DRS_FOGENABLE, FALSE);
+	IDirect3DDevice9_SetRenderState(dev, D3DRS_CULLMODE, D3DCULL_NONE);
+	IDirect3DDevice9_SetRenderState(dev, D3DRS_STENCILENABLE, FALSE);
+	IDirect3DDevice9_SetRenderState(dev, D3DRS_SCISSORTESTENABLE, FALSE);
+	IDirect3DDevice9_SetRenderState(dev, D3DRS_ALPHATESTENABLE, FALSE);
+	IDirect3DDevice9_SetRenderState(dev, D3DRS_SRGBWRITEENABLE, FALSE);
+	IDirect3DDevice9_SetRenderState(dev, D3DRS_ALPHABLENDENABLE, TRUE);
+	IDirect3DDevice9_SetRenderState(dev, D3DRS_BLENDOP, D3DBLENDOP_ADD);
+	IDirect3DDevice9_SetRenderState(dev, D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+	IDirect3DDevice9_SetRenderState(dev, D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+	IDirect3DDevice9_SetRenderState(dev, D3DRS_COLORWRITEENABLE, 0xF);
+	IDirect3DDevice9_SetTextureStageState(dev, 1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+	IDirect3DDevice9_SetTextureStageState(dev, 1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+	IDirect3DDevice9_SetTexture(dev, 0, (IDirect3DBaseTexture9 *)tex);
+	IDirect3DDevice9_SetFVF(dev, D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1);
+	IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_TEXCOORDINDEX, 0);
+	IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
+	IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+	IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+	IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+	IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+	IDirect3DDevice9_SetSamplerState(dev, 0, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+	IDirect3DDevice9_SetSamplerState(dev, 0, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+	IDirect3DDevice9_SetSamplerState(dev, 0, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+	IDirect3DDevice9_SetSamplerState(dev, 0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+	IDirect3DDevice9_SetSamplerState(dev, 0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+	IDirect3DDevice9_SetSamplerState(dev, 0, D3DSAMP_SRGBTEXTURE, FALSE);
+	DWORD c = 0xFFFFFFFF;
+	float X = x0 - 0.5f, Y = y0 - 0.5f;
+	TVtx v[4] = { {X, Y, 0, 1, c, 0, 0}, {X + w, Y, 0, 1, c, 1, 0}, {X, Y + h, 0, 1, c, 0, 1}, {X + w, Y + h, 0, 1, c, 1, 1} };
+	IDirect3DDevice9_DrawPrimitiveUP(dev, D3DPT_TRIANGLESTRIP, 2, v, sizeof(TVtx));
+	IDirect3DStateBlock9_Apply(sb);
+	IDirect3DStateBlock9_Release(sb);
+	IDirect3DTexture9_Release(tex);
+}
+
 /* ---------- Text als Bild (GDI, kein Grafikobjekt) ---------- */
 
 #define TEX_H 512
@@ -188,6 +323,13 @@ static void text_rows(IDirect3DDevice9 *dev, float x, float y, int row0, int row
 
 static void draw(IDirect3DDevice9 *dev)
 {
+	poll_keys();
+	read_panel();
+	if (panel_open()) {             /* aufgeklappt: Bedienoberflaeche des Steuerpults */
+		draw_panel(dev);
+		if (InterlockedIncrement(&g_draws) == 1) ov_log("Overlay: erstes Bild gezeichnet (Steuerpult-Ansicht)");
+		return;
+	}
 	read_feed();
 	if (g_text_dirty) render_text();
 	if (!g_bits || !g_text_h) return;

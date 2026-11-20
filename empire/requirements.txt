@@ -6,3 +6,5 @@ keyring>=25
 brotli>=1.2
 # nur fuer die Offline-Tests (sim_test.py, sim_commander.py)
 lupa>=2.0
+# Overlay-Oberflaeche im Spiel (overlay_panel.py)
+pillow>=10
