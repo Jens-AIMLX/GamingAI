@@ -219,7 +219,7 @@ do
 			try("CurrentYear()", C.CurrentYear)
 			try("CurrentSeasonString()", C.CurrentSeasonString)
 			try("IsPlayersTurn()", C.IsPlayersTurn)
-			try("RetrieveFactionMilitaryForceLists(pid, true)", C.RetrieveFactionMilitaryForceLists, pid, true)
+			local forces = try("RetrieveFactionMilitaryForceLists(pid, true)", C.RetrieveFactionMilitaryForceLists, pid, true)
 			try("RetrieveFactionMilitaryForceLists(pid, false)", C.RetrieveFactionMilitaryForceLists, pid, false)
 			local regions = try("RetrieveFactionRegionList(pid)", C.RetrieveFactionRegionList, pid)
 			try("RetrieveFactionAgentsList(pid)", C.RetrieveFactionAgentsList, pid)
@@ -308,11 +308,56 @@ do
 					         ZurueckAmAnfang = (cur == first), Namen = table.concat(names, ", ") }
 				end)
 			end
+			-- Probe 6: Zusammensetzung einer Armee (layout.root: InitialiseCharacterDetails(character_ptr);
+			-- exchange_panel: RetrieveContainedEntitiesFromCharacter(character, target) liefert Units/Ships/Agents) und
+			-- Missionen (missions: MissionsDetails())
+			local army
+			for _, c in pairs(type(forces) == "table" and forces or {}) do
+				if type(c) == "table" and c.ShowAsCharacter ~= false and c.IsMilitary and not c.IsNaval
+				   and (tonumber(c.Units) or 0) >= 4 and c.Address ~= nil then army = c; break end
+			end
+			if army then
+				outf:write("-- Armee fuer Probe 6: " .. tostring(army.Name) .. " (" .. tostring(army.Units) .. " Einheiten)\n")
+				try("InitialiseCharacterDetails(army.Address)", C.InitialiseCharacterDetails, army.Address)
+				try("RetrieveContainedEntitiesFromCharacter(army.Address, army.Address)",
+				    C.RetrieveContainedEntitiesFromCharacter, army.Address, army.Address)
+			end
+			try("MissionsDetails()", C.MissionsDetails)
 			outf:write("== Ende der Lese-Probe ==\n")
 			outf:close()
 			prog:close()
 		end
 		pcall(es.AddEventCallBack, "FactionTurnStart", function(context) pcall(state_probe, context) end)
+		-- Probe 6b (nur mit campaign_probe2.on): Leerlauf der Bau-/Forschungsschlangen ueber die Abfragen der Ereignisse
+		-- zu Zugbeginn (wie Beraterskripte): je Ereignis die ersten 12 Kontexte nach campaign_probe6.txt
+		local q_seen = {}
+		local function q_probe(event, checks)
+			return function(context)
+				if CampaignUI == nil or not exists("campaign_probe2.on") then return end
+				local okl, loc = pcall(function() return conditions[checks[1]](context) end)
+				local key = event .. ((okl and loc) and ":eigen" or ":fremd")   -- je 12 eigene, 3 fremde
+				q_seen[key] = (q_seen[key] or 0) + 1
+				if q_seen[key] > ((okl and loc) and 12 or 3) then return end
+				local parts = { event }
+				for _, name in ipairs(checks) do
+					local fn = conditions[name]
+					local ok, v = pcall(function() return fn(context) end)
+					parts[#parts + 1] = name .. "=" .. (ok and tostring(v) or ("FEHLER " .. tostring(v)))
+				end
+				pcall(function()
+					local f = io.open(P .. "campaign_probe6.txt", "a")
+					f:write(stamp(), "  ", table.concat(parts, " | "), "\n")
+					f:close()
+				end)
+			end
+		end
+		pcall(es.AddEventCallBack, "FactionTurnStart", q_probe("FactionTurnStart",
+			{ "FactionIsLocal", "FactionName", "ResearchQueueIdle" }))
+		pcall(es.AddEventCallBack, "RegionTurnStart", q_probe("RegionTurnStart",
+			{ "RegionIsLocal", "SettlementIsLocal", "SettlementName", "SettlementBuildingQueueIdleDespiteCash",
+			  "SettlementFortificationsBuildingQueueIdleDespiteCash", "SettlementRoadBuildingQueueIdleDespiteCash" }))
+		pcall(es.AddEventCallBack, "SlotTurnStart", q_probe("SlotTurnStart",
+			{ "SlotIsLocal", "SlotName", "SlotType", "SlotBuildingQueueIdleDespiteCash" }))
 		for _, name in ipairs({ "FactionTurnStart", "CharacterSelected", "SettlementSelected", "CharacterTurnStart",
 		                        "PanelOpenedCampaign", "MovementPointsExhausted" }) do
 			pcall(es.AddEventCallBack, name, once(name))
