@@ -252,6 +252,9 @@ class Side:
         self.last_togo = 0
         self.plan_reason = ""
         self.idle_noted = False
+        # Nummer der neuesten Planung: ein Befehl (Chat, Hotkey, Liste) startet sofort eine neue, auch wenn noch eine
+        # laeuft - die aeltere wird bei ihrer Rueckkehr verworfen (frueher bis zu 24 s Wartezeit, Logs 2026-11-20)
+        self.gen = 0
 
     def ai_units(self, w: World) -> list:
         """Eigene Einheiten, die die KI gerade fuehrt (nicht beim Spieler, nicht in einer Spielergruppe)."""
@@ -303,6 +306,11 @@ class Side:
         # bestaetigen oder Einheiten uebergeben (Schlacht 2026-11-20 08:30: zweimal die Absicht eines aelteren Plans
         # als Antwort gezeigt). -1 = kein Befehl im Bericht.
         seen = max((t for t, _ in self.immediate), default=-1e9) if kind == "plan" else -1e9
+        if self.busy:
+            self.log({"type": "info", "t": t_game, "text": f"Allianz {self.alliance}: neuer Befehl - laufende Planung "
+                      "wird ueberholt (ihr Ergebnis wird verworfen)"})
+        self.gen += 1
+        my_gen = self.gen
         self.busy = True
         entry = {"type": "report" if kind == "plan" else "deploy_report", "alliance": self.alliance, "t": t_game,
                  "text": report}
@@ -314,6 +322,11 @@ class Side:
             t0 = time.monotonic()
             try:
                 plan = fn(report)
+                if my_gen != self.gen:          # inzwischen durch eine neuere Planung ueberholt: nicht anwenden
+                    self.log({"type": "superseded", "alliance": self.alliance, "t": t_game,
+                              "secs": round(time.monotonic() - t0, 1), "usage": getattr(self.general, "last_usage", None),
+                              "kind": kind})
+                    return
                 if kind == "plan":
                     self.ready = plan
                 else:
@@ -338,10 +351,12 @@ class Side:
                     self.log({"type": "info", "t": t_game,
                               "text": f"Feldherr Allianz {self.alliance} zum Befehl {which}: {plan.intent}"})
             except Exception as e:  # Planung darf die Schlacht nie stoppen: Executor macht mit dem alten Plan weiter
-                self.error = str(e)
-                self.log({"type": "error", "alliance": self.alliance, "t": t_game, "error": str(e)})
+                if my_gen == self.gen:
+                    self.error = str(e)
+                    self.log({"type": "error", "alliance": self.alliance, "t": t_game, "error": str(e)})
             finally:
-                self.busy = False
+                if my_gen == self.gen:
+                    self.busy = False
 
         threading.Thread(target=run, daemon=True).start()
 
@@ -525,11 +540,7 @@ def main() -> int:
                 say(f"Hinweis: Aufstellung angefordert in Phase {w.phase} - wird als Bewegungsplan ausgefuehrt")
             text = load_text(Path(args.deploy_prompt)) if args.deploy_prompt else ""
             for a in alls:
-                s = side_for(a)
-                if s.busy:
-                    say(f"Allianz {a}: Feldherr plant gerade, Aufstellung folgt danach nicht automatisch - bitte erneut ausloesen")
-                    continue
-                s.start_deploy(w, text)
+                side_for(a).start_deploy(w, text)          # ueberholt eine laufende Planung
             log({"type": "info", "t": w.time, "text": f"Aufstellung angefordert ({source}) fuer Allianz {', '.join(map(str, alls))}"
                                                    + (f", Aufstellungsprompt {len(text)} Zeichen" if text.strip() else ", ohne Aufstellungsprompt")})
         elif cmd in ("sel_ai", "sel_player"):
@@ -694,7 +705,7 @@ def main() -> int:
                     log({"type": "info", "t": w.time, "text": f"Allianz {a}: Aufstellung abgeschlossen - alle Einheiten auf Position"})
 
             # normale Planung nur nach Schlachtbeginn
-            if w.phase == "Deployed" and not s.busy:
+            if w.phase == "Deployed" and (not s.busy or s.force_plan):
                 if not s.ai_units(w) and not s.new_order():
                     # die KI fuehrt keine Einheit (alle beim Spieler): nichts zu planen, bis Einheiten zurueckkommen
                     # (Uebergabe setzt force_plan, die Einheiten sind dann wieder KI-gefuehrt) oder ein Befehl kommt

@@ -353,23 +353,15 @@ def render(p: PanelData) -> tuple[Image.Image, list[Hot]]:
         _toggle(pt, x, row, "enemy", foe)
         # Planungsintervall je Seite + Nahkampf-Faktor
         y2 = top + 26 if row == top else top + 50
+        sw = max(50, min(120, (W - 24 - 239) // 3))       # Schieberbreite passt sich der Overlaybreite an
         x = 12
         for side, val, on in (("player", p.iv_player, own), ("enemy", p.iv_enemy, foe)):
             _side_icon(d, x + 2, y2 + 3, side, on, 14)
-            x = pt.button(x + 20, y2, "\u2212", ("iv", side, -5))
-            d.text((x, y2 + 3), f"{val} s", font=font(11), fill=TEXT if on else MUTED)
-            x = pt.button(x + 34, y2, "+", ("iv", side, 5)) + 6
+            _slider(pt, x + 26, x + 26 + sw, y2, (val - 5) / 115, f"iv_{side}", on)
+            d.text((x + 34 + sw, y2 + 3), f"{val} s", font=font(11), fill=TEXT if on else MUTED)
+            x += 26 + sw + 50
         d.text((x, y2 + 3), "Nahkampf \u00d7" + f"{p.close_f:.2f}".replace(".", ","), font=font(11), fill=MUTED)
-        sx0 = x + 98
-        sx1 = min(sx0 + 110, W - 16)
-        if sx1 - sx0 >= 40:
-            cy = y2 + 10
-            d.rounded_rectangle((sx0, cy - 2, sx1, cy + 2), 2, fill=EDGE)
-            frac = (p.close_f - 0.25) / 0.75
-            kx = int(sx0 + frac * (sx1 - sx0))
-            d.rounded_rectangle((sx0, cy - 2, kx, cy + 2), 2, fill=GOLD)
-            d.ellipse((kx - 6, cy - 6, kx + 6, cy + 6), fill=GOLD, outline=(90, 80, 50, 255))
-            pt.hots.append(Hot(sx0 - 6, y2, sx1 + 6, y2 + 20, ("slider", "close_f"), bar=(sx0, y2, sx1, y2 + 20)))
+        _slider(pt, x + 104, min(x + 104 + sw, W - 18), y2, (p.close_f - 0.25) / 0.75, "close_f", True)
         st = f"{p.status}  |  {p.model}, {p.effort}"
         d.text((12, y2 + 24), st, font=font(11), fill=GREEN if p.running else MUTED)
         log_top = y2 + 44
@@ -483,6 +475,21 @@ def _review_view(pt: Painter, top: int, bottom_y: int) -> None:
     x = pt.button(12, bottom_y - 24, "\u00dcbernehmen", ("rev_apply",), enabled=bool(r.get("done")), accent=True)
     x = pt.button(x, bottom_y - 24, "Alles neu pr\u00fcfen", ("rev_again",))
     pt.button(x, bottom_y - 24, "Schlie\u00dfen", ("rev_close",))
+
+
+def _slider(pt: Painter, sx0: int, sx1: int, y: int, frac: float, key: str, on: bool = True) -> None:
+    """Schieber: Leiste mit goldenem Anteil und Knopf; Klick springt, Ziehen verstellt (hot 'slider', key)."""
+    d = pt.d
+    if sx1 - sx0 < 30:
+        return
+    frac = min(max(frac, 0.0), 1.0)
+    cy = y + 10
+    fill = GOLD if on else (130, 120, 95, 255)
+    d.rounded_rectangle((sx0, cy - 2, sx1, cy + 2), 2, fill=EDGE)
+    kx = int(sx0 + frac * (sx1 - sx0))
+    d.rounded_rectangle((sx0, cy - 2, kx, cy + 2), 2, fill=fill)
+    d.ellipse((kx - 6, cy - 6, kx + 6, cy + 6), fill=fill, outline=(90, 80, 50, 255))
+    pt.hots.append(Hot(sx0 - 6, y, sx1 + 6, y + 20, ("slider", key), bar=(sx0, y, sx1, y + 20)))
 
 
 def _side_icon(d, x: int, y: int, side: str, on: bool, s: int = 16) -> None:

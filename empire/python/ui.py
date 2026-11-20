@@ -240,11 +240,14 @@ class App(tk.Tk):
         self.cf_var = tk.DoubleVar(value=float(self.s["close_factor"]))
         tb = ttk.Frame(f)
         tb.grid(row=2, column=1, columnspan=6, sticky="w", pady=(6, 0))
-        ttk.Label(tb, text="meine Armee ").pack(side="left")
-        ttk.Spinbox(tb, from_=IV_MIN, to=IV_MAX, increment=5, textvariable=self.ipl_var, width=4).pack(side="left")
-        ttk.Label(tb, text=" s, Gegner ").pack(side="left")
-        ttk.Spinbox(tb, from_=IV_MIN, to=IV_MAX, increment=5, textvariable=self.ien_var, width=4).pack(side="left")
-        ttk.Label(tb, text=" s Spielzeit;  im Nahkampf \u00d7").pack(side="left")
+        self.iv_labels = {}
+        for text, var in (("meine Armee", self.ipl_var), ("Gegner", self.ien_var)):
+            ttk.Label(tb, text=text).pack(side="left", padx=(0, 2))
+            ttk.Scale(tb, from_=IV_MIN, to=IV_MAX, variable=var, length=120,
+                      command=lambda v, var=var: self._iv_snap(var)).pack(side="left")
+            self.iv_labels[str(var)] = ttk.Label(tb, text="", width=6)
+            self.iv_labels[str(var)].pack(side="left", padx=(2, 8))
+        ttk.Label(tb, text="Spielzeit;  im Nahkampf \u00d7").pack(side="left")
         ttk.Scale(tb, from_=CF_MIN, to=CF_MAX, variable=self.cf_var, length=110,
                   command=lambda v: self._cf_snap()).pack(side="left", padx=(2, 2))
         self.cf_label = ttk.Label(tb, text="", width=5)
@@ -253,6 +256,8 @@ class App(tk.Tk):
                           "Feindbewegung, erledigten Zügen - sonst spätestens nach dem Dreifachen)",
                   foreground="#777").grid(row=6, column=0, columnspan=7, sticky="w")
         self._cf_snap()
+        self._iv_snap(self.ipl_var)
+        self._iv_snap(self.ien_var)
         for v in (self.model_var, self.effort_var):
             v.trace_add("write", lambda *a: self._schedule_save())
         for v in (self.ipl_var, self.ien_var):
@@ -483,6 +488,19 @@ class App(tk.Tk):
             return round(min(max(float(self.cf_var.get()), CF_MIN), CF_MAX) * 20) / 20
         except (tk.TclError, ValueError):
             return 0.5
+
+    def _iv_snap(self, var) -> None:
+        """Intervall-Schieber in 5-s-Schritten; Anzeige aktualisieren (Speichern ueber den Variablen-Trace)."""
+        try:
+            raw = float(self.getvar(str(var)))              # Rohwert (der Regler liefert Kommazahlen)
+        except (tk.TclError, ValueError):
+            raw = 10.0
+        v = int(min(max(round(raw / 5) * 5, IV_MIN), IV_MAX))
+        if abs(raw - v) > 1e-9:
+            var.set(v)
+        lbl = getattr(self, "iv_labels", {}).get(str(var))
+        if lbl is not None:
+            lbl.config(text=f"{v} s")
 
     def _cf_snap(self) -> None:
         """Schieber in 0,05er-Schritten; Anzeige und Feldherr (options.json) sofort aktualisieren."""
@@ -1074,8 +1092,16 @@ class App(tk.Tk):
             self._overlay_note(f"Aktion {a[0]} fehlgeschlagen: {e}")
 
     def _ov_slider(self, hot, x: int) -> None:
-        """Nahkampf-Faktor aus der Zeigerposition auf dem Schieber (0,25 .. 1, Schritte 0,05)."""
+        """Schieber im Overlay: Intervall je Seite (5..120 s, 5er Schritte) oder Nahkampf-Faktor (0,25..1, 0,05)."""
         frac = min(max((x - hot.bar[0]) / max(hot.bar[2] - hot.bar[0], 1), 0.0), 1.0)
+        key = hot.action[1]
+        if key in ("iv_player", "iv_enemy"):
+            var = self.ipl_var if key == "iv_player" else self.ien_var
+            v = int(round((IV_MIN + frac * (IV_MAX - IV_MIN)) / 5) * 5)
+            if self._iv(var) != v:
+                var.set(v)
+            self._iv_snap(var)
+            return
         self.cf_var.set(round((CF_MIN + frac * (CF_MAX - CF_MIN)) * 20) / 20)
         self._cf_snap()
 
@@ -1149,9 +1175,6 @@ class App(tk.Tk):
         elif k == "m_effort":
             self.effort_var.set(a[1])
             self._schedule_save()
-        elif k == "iv":                                     # Intervall je Seite, 5er-Schritte
-            var = self.ipl_var if a[1] == "player" else self.ien_var
-            var.set(min(max(self._iv(var) + a[2], IV_MIN), IV_MAX))
         elif k == "ctl":                                    # KI fuehrt: eigene / Gegner ein-aus
             self._toggle_side(a[1])
         elif k == "m_groups":
