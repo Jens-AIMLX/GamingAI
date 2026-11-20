@@ -127,18 +127,56 @@ do
 			end
 			out[#out + 1] = indent .. "}"
 		end
+		-- Probe 2 laeuft NUR, wenn ai_bridge/campaign_probe2.on existiert: ein Aufruf in die Engine kann das Spiel
+		-- abstuerzen lassen (pcall faengt nur Lua-Fehler; Absturz 2026-11-20 21:10 beim ersten Lauf). Vor jedem Aufruf
+		-- steht "BEGINN <Aufruf>" in campaign_state_probe.progress, danach "ENDE"; fehlt das ENDE, hat dieser Aufruf
+		-- das Spiel abstuerzen lassen - er kommt nach campaign_probe2.skip und wird in spaeteren Laeufen ausgelassen.
+		local P = "ai_bridge\\"
+		local function exists(name)
+			local f = io.open(P .. name, "r")
+			if f then f:close(); return true end
+			return false
+		end
 		local function state_probe(context)
-			if state_done or CampaignUI == nil then return end
+			if state_done or CampaignUI == nil or not exists("campaign_probe2.on") then return end
 			local ok_local, is_local = pcall(function() return conditions.FactionIsLocal(context) end)
 			if not (ok_local and is_local) then return end
 			state_done = true
-			local out = { "== Lese-Probe " .. stamp() .. " ==" }
-			local function try(label, fn, ...)
-				local res = { pcall(fn, ...) }
-				out[#out + 1] = "-- " .. label .. ": " .. (res[1] and ("ok, " .. (#res - 1) .. " Rueckgabe(n)") or ("FEHLER " .. tostring(res[2])))
-				if res[1] then
-					for i = 2, #res do dump(res[i], 3, {}, "  ", out, { 400 }) end
+			local skip, open = {}, nil
+			pcall(function() for line in io.lines(P .. "campaign_probe2.skip") do skip[line] = true end end)
+			pcall(function()
+				for line in io.lines(P .. "campaign_state_probe.progress") do
+					local b, e = line:match("^BEGINN (.*)$"), line:match("^ENDE (.*)$")
+					if b then open = b elseif e and e == open then open = nil end
 				end
+			end)
+			if open and not skip[open] then           -- letzter Lauf ist bei diesem Aufruf abgestuerzt
+				skip[open] = true
+				pcall(function() local f = io.open(P .. "campaign_probe2.skip", "a"); f:write(open, "\n"); f:close() end)
+			end
+			local prog = io.open(P .. "campaign_state_probe.progress", "w")
+			local outf = io.open(P .. "campaign_state_probe.txt", "w")
+			if not (prog and outf) then return end
+			outf:write("== Lese-Probe " .. stamp() .. " ==\n")
+			outf:flush()
+			local function try(label, fn, ...)
+				if skip[label] then
+					outf:write("-- " .. label .. ": AUSGELASSEN (Spiel stuerzte hier in einem frueheren Lauf ab)\n")
+					outf:flush()
+					return nil
+				end
+				prog:write("BEGINN ", label, "\n")
+				prog:flush()
+				local res = { pcall(fn, ...) }
+				local out = { "-- " .. label .. ": " .. (res[1] and ("ok, " .. (#res - 1) .. " Rueckgabe(n)")
+				                                          or ("FEHLER " .. tostring(res[2]))) }
+				if res[1] then
+					for i = 2, #res do pcall(dump, res[i], 3, {}, "  ", out, { 400 }) end
+				end
+				outf:write(table.concat(out, "\n"), "\n")
+				outf:flush()
+				prog:write("ENDE ", label, "\n")
+				prog:flush()
 				return res[1] and res[2] or nil
 			end
 			local C = CampaignUI
@@ -163,11 +201,9 @@ do
 			try("GovernorshipList()", C.GovernorshipList)
 			try("TheatreList()", C.TheatreList)
 			try("RetrieveVisibleEnitityDetails()", C.RetrieveVisibleEnitityDetails)
-			pcall(function()
-				local f = io.open("ai_bridge\\campaign_state_probe.txt", "w")
-				f:write(table.concat(out, "\n"), "\n")
-				f:close()
-			end)
+			outf:write("== Ende der Lese-Probe ==\n")
+			outf:close()
+			prog:close()
 		end
 		pcall(es.AddEventCallBack, "FactionTurnStart", function(context) pcall(state_probe, context) end)
 		for _, name in ipairs({ "FactionTurnStart", "CharacterSelected", "SettlementSelected", "CharacterTurnStart",
