@@ -10,9 +10,10 @@ Was passiert:
   2. empire_bridge.dll           -> <Spiel>/empire_bridge.dll
   3. lua/ai_bridge.battle_script -> <Spiel>/data/ai_bridge.battle_script
   4. <Spiel>/data/battle_scripted.lua: Sicherung .orig anlegen, Lade-Block anhaengen (zwischen Markern)
-  5. <Spiel>/ai_bridge/config.lua anlegen (falls nicht vorhanden)
-  6. python/local_settings.json mit dem Spielordner schreiben (fuer commander.py / ui.py)
---uninstall stellt battle_scripted.lua wieder her und entfernt DLL und Battle-Skript.
+  5. <Spiel>/data/campaigns/*/scripting.lua: Sicherung .orig, Kampagnen-Probe anhaengen (lua/campaign_addon.lua)
+  6. <Spiel>/ai_bridge/config.lua anlegen (falls nicht vorhanden)
+  7. python/local_settings.json mit dem Spielordner schreiben (fuer commander.py / ui.py)
+--uninstall stellt battle_scripted.lua und die Kampagnenskripte wieder her und entfernt DLL und Battle-Skript.
 """
 from __future__ import annotations
 
@@ -113,6 +114,7 @@ def install(game: Path, force: bool) -> None:
     addon = (HERE / "lua" / "battle_scripted_addon.lua").read_text(encoding="utf-8")
     bs.write_text(text + addon, encoding="latin-1")
     print(f"  Lade-Block    -> {bs}")
+    install_campaign(game)
 
     cfg_dir = game / "ai_bridge"
     cfg_dir.mkdir(exist_ok=True)
@@ -124,7 +126,30 @@ def install(game: Path, force: bool) -> None:
     print("Fertig. Steuerpult: start_ui.bat  |  Feldherr: python python/commander.py")
 
 
+def campaign_scripts(game: Path) -> list[Path]:
+    return sorted((game / "data" / "campaigns").glob("*/scripting.lua"))
+
+
+def install_campaign(game: Path) -> None:
+    """Kampagnen-Probe (lua/campaign_addon.lua, nur lesen) an jedes data/campaigns/*/scripting.lua anhaengen -
+    jeweils vom Original (.orig) aus, damit der Block nie doppelt drin steht."""
+    addon = (HERE / "lua" / "campaign_addon.lua").read_text(encoding="utf-8")
+    for sc in campaign_scripts(game):
+        orig = sc.with_name("scripting.lua.orig")
+        if not orig.exists():
+            shutil.copy2(sc, orig)
+        sc.write_text(strip_addon(orig.read_text(encoding="latin-1")) + addon, encoding="latin-1")
+        print(f"  Kampagne      -> {sc.relative_to(game)}")
+
+
 def uninstall(game: Path) -> None:
+    for sc in campaign_scripts(game):
+        orig = sc.with_name("scripting.lua.orig")
+        if orig.exists():
+            shutil.copy2(orig, sc)
+            print(f"  wiederhergestellt: {sc}")
+        else:
+            sc.write_text(strip_addon(sc.read_text(encoding="latin-1")), encoding="latin-1")
     bs = game / "data" / "battle_scripted.lua"
     orig = bs.with_name("battle_scripted.lua.orig")
     if orig.exists():
