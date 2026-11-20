@@ -178,12 +178,13 @@ class EmpireBridge:
         return [r for r in st.get("order_results") or [] if r.get("seq") == seq]
 
     def write_config(self, control: str = "enemy", player_alliance: str | int = "auto", tick_ms: int = 1000,
-                     own_groups: bool = False) -> None:
+                     own_groups: bool = False, overlay: bool = True) -> None:
         """Schreibt config.lua; wirkt ab der naechsten Schlacht. own_groups: KI uebernimmt auch Einheiten, die in
-        Gruppen des Spielers stecken (Versuch ueber add_group)."""
+        Gruppen des Spielers stecken (Versuch ueber add_group). overlay: Feld im Spielbild - die DLL liest das alle
+        2 s, wirkt also sofort."""
         assert control in ("enemy", "player", "both", "none")
         text = "return " + to_lua({"control": control, "player_alliance": player_alliance, "tick_ms": tick_ms,
-                                   "own_groups": bool(own_groups)}) + "\n"
+                                   "own_groups": bool(own_groups), "overlay": bool(overlay)}) + "\n"
         (self.dir / "config.lua").write_text(text, encoding="utf-8")
 
 

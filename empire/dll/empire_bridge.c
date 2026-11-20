@@ -14,6 +14,8 @@
  * Sicherheit: Vor dem Patchen werden die Original-Bytes geprueft. Passt etwas nicht, wird nichts veraendert.
  * Die DLL ruft keine Lua-API auf.
  *
+ * Zusaetzlich: Overlay im Spielbild (overlay.c), abschaltbar mit "overlay = false" in ai_bridge/config.lua.
+ *
  * Build: build.bat (MSVC x86).
  */
 #define WIN32_LEAN_AND_MEAN
@@ -60,6 +62,17 @@ static void logf(const char *fmt, ...)
 	fputc('\n', f);
 	fclose(f);
 }
+
+/* fuer overlay.c */
+void ov_log(const char *fmt, ...)
+{
+	char buf[512];
+	va_list ap; va_start(ap, fmt); _vsnprintf(buf, sizeof buf - 1, fmt, ap); va_end(ap);
+	buf[sizeof buf - 1] = 0;
+	logf("%s", buf);
+}
+
+int overlay_install(void);   /* overlay.c */
 
 static int bytes_match(DWORD va, const BYTE *expect, size_t n)
 {
@@ -116,6 +129,14 @@ static int install(void)
 	g_skip   = g_base + RVA(VA_SKIP);
 	g_assign = (WSTR_ASSIGN)(g_base + RVA(VA_WSTR_ASSIGN));
 	logf("empire_bridge: Empire.exe Basis 0x%08lx", g_base);
+	{   /* nur in einem Abbild passender Groesse lesen (fremde EXE, z. B. Test) */
+		IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)g_base;
+		IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)(g_base + dos->e_lfanew);
+		if (nt->OptionalHeader.SizeOfImage < RVA(VA_PATCH) + 16) {
+			logf("Kein passendes Empire.exe (Abbild %lu Bytes) - Patch NICHT angewendet", nt->OptionalHeader.SizeOfImage);
+			return 0;
+		}
+	}
 
 	BYTE *site = (BYTE *)(g_base + RVA(VA_PATCH));
 	if (site[0] == 0xE9) {
@@ -162,6 +183,8 @@ __declspec(dllexport) int __cdecl luaopen_empire_bridge(void *L)
 			return 0;
 		}
 		if (!install()) InterlockedExchange(&g_installed, 2);
+		/* Overlay im Spielbild (unabhaengig vom Patch; schaltet sich bei Problemen selbst ab) */
+		overlay_install();
 	}
 	return 0;
 }

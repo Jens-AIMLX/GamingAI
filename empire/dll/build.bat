@@ -14,6 +14,6 @@ if not defined VSDIR (
 )
 call "%VSDIR%\VC\Auxiliary\Build\vcvars32.bat" >nul || exit /b 1
 cd /d "%~dp0"
-cl /nologo /LD /O2 /MT /W3 /D_CRT_SECURE_NO_WARNINGS empire_bridge.c /link /DLL /OUT:empire_bridge.dll kernel32.lib || exit /b 1
+cl /nologo /LD /O2 /MT /W3 /D_CRT_SECURE_NO_WARNINGS empire_bridge.c overlay.c /link /DLL /OUT:empire_bridge.dll kernel32.lib user32.lib || exit /b 1
 del /q *.obj *.exp *.lib 2>nul
 echo OK: %~dp0empire_bridge.dll gebaut. Installieren: python install.py

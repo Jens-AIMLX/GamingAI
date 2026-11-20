@@ -100,15 +100,16 @@ def settings_save(s: dict) -> None:
     os.replace(tmp, SETTINGS)
 
 
-def read_config() -> tuple[str, bool]:
-    """(control, own_groups) aus <Spiel>/ai_bridge/config.lua."""
+def read_config() -> tuple[str, bool, bool]:
+    """(control, own_groups, overlay) aus <Spiel>/ai_bridge/config.lua."""
     try:
         text = (EmpireBridge().dir / "config.lua").read_text(encoding="utf-8")
         m = re.search(r'control\s*=\s*"(\w+)"', text)
         g = re.search(r'own_groups\s*=\s*(true|false)', text)
-        return (m.group(1) if m else "enemy", bool(g and g.group(1) == "true"))
+        o = re.search(r'overlay\s*=\s*(true|false)', text)
+        return (m.group(1) if m else "enemy", bool(g and g.group(1) == "true"), not (o and o.group(1) == "false"))
     except (FileNotFoundError, SystemExit):
-        return ("enemy", False)
+        return ("enemy", False, True)
 
 
 class App(tk.Tk):
@@ -164,7 +165,7 @@ class App(tk.Tk):
         f = ttk.LabelFrame(root, text="Schlacht", padding=6)
         f.grid(row=1, column=0, sticky="ew", **pad)
         ttk.Label(f, text="KI führt:").grid(row=0, column=0, sticky="w")
-        control, own_groups = read_config()
+        control, own_groups, overlay = read_config()
         self.control_var = tk.StringVar(value=control)
         side_box = ttk.Frame(f)
         side_box.grid(row=0, column=1, columnspan=5, sticky="w")
@@ -177,6 +178,10 @@ class App(tk.Tk):
                                 "(Versuch über add_group, Ergebnis im Protokoll)",
                         variable=self.own_groups_var, command=self._write_control).grid(
             row=3, column=0, columnspan=7, sticky="w", pady=(6, 0))
+        self.overlay_var = tk.BooleanVar(value=overlay)
+        ttk.Checkbutton(f, text="Overlay im Spiel (Feld unten links im Spielbild, auch im Vollbild; wirkt nach etwa 2 s)",
+                        variable=self.overlay_var, command=self._write_control).grid(
+            row=4, column=0, columnspan=7, sticky="w", pady=(2, 0))
 
         ttk.Label(f, text="Feldherr:").grid(row=1, column=0, sticky="w", pady=(6, 0))
         self.model_var = tk.StringVar(value=self.s["model"] if self.s["model"] in MODELS else DEFAULTS["model"])
@@ -404,7 +409,8 @@ class App(tk.Tk):
     # ---------- Modus ----------
     def _write_control(self) -> None:
         try:
-            EmpireBridge().write_config(control=self.control_var.get(), own_groups=self.own_groups_var.get())
+            EmpireBridge().write_config(control=self.control_var.get(), own_groups=self.own_groups_var.get(),
+                                        overlay=self.overlay_var.get())
             self._append(f"Modus gespeichert: KI führt '{self.control_var.get()}' (ab der nächsten Schlacht).\n")
         except (Exception, SystemExit) as e:
             messagebox.showerror("config.lua", str(e))
