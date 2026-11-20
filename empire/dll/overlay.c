@@ -27,6 +27,12 @@
  * in Panel-Koordinaten nach ai_bridge/overlay_input.txt; das Steuerpult fuehrt die Aktion aus. Damit die Klicks
  * nicht auch im Spiel landen, werden sie dort verschluckt: Fenstermeldungen (Fenster-Unterklasse) und DirectInput
  * (GetDeviceState/GetDeviceData der Maus, per Hot-Patch umgeleitet - Empire liest die Maus ueber DirectInput).
+ * Ueber dem Overlay zeigt die DLL den normalen Pfeil statt des Fadenkreuzes des Spiels.
+ *
+ * Tastatur (Stufe C): Setzt das Steuerpult im Kopf des Bildes flags bit 1 (ein Feld im Overlay hat den Fokus),
+ * meldet die DLL Tasten ("key <vk> <mods>") und Zeichen ("char <code>") nach overlay_input.txt und haelt die
+ * Tastatur vom Spiel fern: Fenstermeldungen (WM_KEY*, WM_CHAR) und DirectInput-Tastatur (Zustand geleert, Puffer
+ * verworfen). F8 bleibt wirksam.
  */
 #define WIN32_LEAN_AND_MEAN
 #define COBJMACROS
@@ -184,6 +190,8 @@ static int panel_open(void)
 	return (g_panel_flags & 1) && g_panel_px && g_panel_w && GetTickCount() - g_panel_tick < 5000;
 }
 
+static int kbd_wanted(void) { return panel_open() && (g_panel_flags & 2); }
+
 /* ---------- Maus ueber dem Overlay (Stufe B) ---------- */
 static HWND g_hwnd;                       /* Fenster des Spiels */
 static WNDPROC g_orig_wndproc;
@@ -196,6 +204,9 @@ static DWORD g_last_drag;
 /* Mausrad: Fenstermeldung, DirectInput-Zustand und -Puffer sehen dieselbe Drehung - je Quelle sammeln und je Bild
  * nur die staerkste melden (sonst dreifach) */
 static LONG g_wheel_src[3];
+static volatile LONG g_kbd;              /* Tastatur gehoert dem Overlay (Feld hat den Fokus) */
+static int g_d3dcur_hidden, g_d3dcur_prev;
+static HCURSOR g_arrow;
 
 static void emit(const char *kind, int x, int y, int delta)
 {
@@ -249,10 +260,43 @@ static void poll_mouse(void)
 	}
 	if (wheel && inside) emit("wheel", x, y, wheel);
 	InterlockedExchange(&g_over, inside || g_dragging);
+	if (inside) {
+		if (!g_arrow) g_arrow = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
+		SetCursor(g_arrow);
+	}
+}
+
+static int key_mods(void)
+{
+	return ((GetKeyState(VK_CONTROL) & 0x8000) ? 1 : 0) | ((GetKeyState(VK_SHIFT) & 0x8000) ? 2 : 0);
 }
 
 static LRESULT CALLBACK hk_wndproc(HWND h, UINT m, WPARAM w, LPARAM l)
 {
+	if (g_kbd) {
+		switch (m) {
+		case WM_KEYDOWN: case WM_SYSKEYDOWN: {
+			if (w == VK_F8) break;                         /* F8 klappt weiter auf/zu */
+			emit("key", (int)w, key_mods(), 0);
+			BYTE ks[256];
+			WCHAR buf[8];
+			if (GetKeyboardState(ks) && !(ks[VK_CONTROL] & 0x80)) {
+				int n = ToUnicode((UINT)w, (UINT)((l >> 16) & 0xFF), ks, buf, 8, 0);
+				for (int i = 0; i < n; i++)
+					if (buf[i] >= 32 && buf[i] != 127) emit("char", buf[i], 0, 0);
+			}
+			return 0;
+		}
+		case WM_KEYUP: case WM_SYSKEYUP: case WM_CHAR: case WM_SYSCHAR: case WM_DEADCHAR: case WM_SYSDEADCHAR:
+			if (w == VK_F8 && (m == WM_KEYUP || m == WM_SYSKEYUP)) break;
+			return 0;                                      /* Tastatur gehoert dem Overlay */
+		}
+	}
+	if (g_over && m == WM_SETCURSOR) {
+		if (!g_arrow) g_arrow = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
+		SetCursor(g_arrow);
+		return TRUE;                                       /* Pfeil statt Fadenkreuz */
+	}
 	if (g_over) {
 		switch (m) {
 		case WM_MOUSEWHEEL:
@@ -289,19 +333,28 @@ static PFN_GetDeviceData g_orig_gdd;
 static struct { void *dev; int mouse; } g_devtype[16];
 static int g_ndevtype;
 
-static int is_mouse(IDirectInputDevice8W *d)
+/* Geraeteart je DirectInput-Geraet (gemerkt): DI8DEVTYPE_MOUSE 0x12, DI8DEVTYPE_KEYBOARD 0x13 */
+static int dev_type(IDirectInputDevice8W *d)
 {
 	for (int i = 0; i < g_ndevtype; i++) if (g_devtype[i].dev == d) return g_devtype[i].mouse;
 	DIDEVCAPS caps;
 	caps.dwSize = sizeof caps;
-	int mouse = SUCCEEDED(IDirectInputDevice8_GetCapabilities(d, &caps)) && (caps.dwDevType & 0xFF) == DI8DEVTYPE_MOUSE;
-	if (g_ndevtype < 16) { g_devtype[g_ndevtype].dev = d; g_devtype[g_ndevtype].mouse = mouse; g_ndevtype++; }
-	return mouse;
+	int t = SUCCEEDED(IDirectInputDevice8_GetCapabilities(d, &caps)) ? (int)(caps.dwDevType & 0xFF) : 0;
+	if (g_ndevtype < 16) { g_devtype[g_ndevtype].dev = d; g_devtype[g_ndevtype].mouse = t; g_ndevtype++; }
+	return t;
 }
+
+static int is_mouse(IDirectInputDevice8W *d) { return dev_type(d) == DI8DEVTYPE_MOUSE; }
+static int is_keyboard(IDirectInputDevice8W *d) { return dev_type(d) == DI8DEVTYPE_KEYBOARD; }
 
 static HRESULT WINAPI hk_GetDeviceState(IDirectInputDevice8W *d, DWORD cb, LPVOID data)
 {
 	HRESULT hr = g_orig_gds(d, cb, data);
+	if (SUCCEEDED(hr) && g_kbd && data && cb == 256) {
+		BYTE f8 = ((BYTE *)data)[DIK_F8];
+		memset(data, 0, 256);                              /* keine Taste gedrueckt (ausser F8) */
+		((BYTE *)data)[DIK_F8] = f8;
+	}
 	if (SUCCEEDED(hr) && g_over && data && (cb == sizeof(DIMOUSESTATE) || cb == sizeof(DIMOUSESTATE2))) {
 		DIMOUSESTATE *ms = (DIMOUSESTATE *)data;
 		if (ms->lZ) InterlockedExchangeAdd(&g_wheel_src[1], ms->lZ);
@@ -314,6 +367,16 @@ static HRESULT WINAPI hk_GetDeviceState(IDirectInputDevice8W *d, DWORD cb, LPVOI
 static HRESULT WINAPI hk_GetDeviceData(IDirectInputDevice8W *d, DWORD cbo, LPDIDEVICEOBJECTDATA rg, LPDWORD n, DWORD fl)
 {
 	HRESULT hr = g_orig_gdd(d, cbo, rg, n, fl);
+	if (SUCCEEDED(hr) && g_kbd && rg && n && *n && !(fl & DIGDD_PEEK) && is_keyboard(d)) {
+		DWORD keep = 0;                                    /* Tastenereignisse verwerfen (ausser F8) */
+		for (DWORD i = 0; i < *n; i++) {
+			DIDEVICEOBJECTDATA *e = (DIDEVICEOBJECTDATA *)((BYTE *)rg + (size_t)i * cbo);
+			if (e->dwOfs != DIK_F8) continue;
+			if (keep != i) memmove((BYTE *)rg + (size_t)keep * cbo, e, cbo);
+			keep++;
+		}
+		*n = keep;
+	}
 	if (SUCCEEDED(hr) && g_over && rg && n && *n && !(fl & DIGDD_PEEK) && is_mouse(d)) {
 		DWORD keep = 0;
 		LONG wheel = 0;
@@ -400,6 +463,26 @@ static void draw_panel(IDirect3DDevice9 *dev)
 	float X = x0 - 0.5f, Y = y0 - 0.5f;
 	TVtx v[4] = { {X, Y, 0, 1, c, 0, 0}, {X + w, Y, 0, 1, c, 1, 0}, {X, Y + h, 0, 1, c, 0, 1}, {X + w, Y + h, 0, 1, c, 1, 1} };
 	IDirect3DDevice9_DrawPrimitiveUP(dev, D3DPT_TRIANGLESTRIP, 2, v, sizeof(TVtx));
+	if (g_over) {
+		CURSORINFO ci;
+		ci.cbSize = sizeof ci;
+		int px, py;
+		if (GetCursorInfo(&ci) && !(ci.flags & CURSOR_SHOWING) && cursor_in_panel(&px, &py)) {
+			/* Spiel blendet den Windows-Zeiger aus: Pfeil selbst zeichnen (schwarzer Rand, weisse Fuellung) */
+			float ax = g_px0 + px, ay = g_py0 + py;
+			IDirect3DDevice9_SetTexture(dev, 0, NULL);
+			IDirect3DDevice9_SetFVF(dev, D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
+			IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+			IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+			IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+			IDirect3DDevice9_SetTextureStageState(dev, 0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
+			DWORD k = 0xFF000000, wcol = 0xFFFFFFFF;
+			Vtx outer[3] = { {ax - 1, ay - 2, 0, 1, k}, {ax - 1, ay + 20, 0, 1, k}, {ax + 15, ay + 15, 0, 1, k} };
+			Vtx inner[3] = { {ax + 1, ay + 2, 0, 1, wcol}, {ax + 1, ay + 16, 0, 1, wcol}, {ax + 11, ay + 13, 0, 1, wcol} };
+			IDirect3DDevice9_DrawPrimitiveUP(dev, D3DPT_TRIANGLELIST, 1, outer, sizeof(Vtx));
+			IDirect3DDevice9_DrawPrimitiveUP(dev, D3DPT_TRIANGLELIST, 1, inner, sizeof(Vtx));
+		}
+	}
 	IDirect3DStateBlock9_Apply(sb);
 	IDirect3DStateBlock9_Release(sb);
 	IDirect3DTexture9_Release(tex);
@@ -611,6 +694,16 @@ static HRESULT WINAPI hk_Present(IDirect3DDevice9 *dev, const RECT *a, const REC
 {
 	if (!g_present_seen) { g_present_seen = 1; ov_log("Overlay: Present wird aufgerufen"); }
 	__try { hook_window(dev, w); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+	InterlockedExchange(&g_kbd, kbd_wanted());
+	__try {                                    /* Hardware-Zeiger des Spiels (D3D) ueber dem Overlay aus */
+		if (g_over && !g_d3dcur_hidden) {
+			g_d3dcur_prev = IDirect3DDevice9_ShowCursor(dev, FALSE);
+			g_d3dcur_hidden = 1;
+		} else if (!g_over && g_d3dcur_hidden) {
+			IDirect3DDevice9_ShowCursor(dev, g_d3dcur_prev);
+			g_d3dcur_hidden = 0;
+		}
+	} __except (EXCEPTION_EXECUTE_HANDLER) {}
 	read_config();
 	if (g_enabled) {
 		__try {

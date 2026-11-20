@@ -145,6 +145,10 @@ class App(tk.Tk):
         self._ov_pressed: tuple | None = None     # (Aktion, Zeit) fuer die Klick-Rueckmeldung
         self._ov_drag = None                      # Scrollbalken, der gerade gezogen wird
         self._ov_input = None                     # overlay_panel.InputReader
+        self._ov_focus: str | None = None         # Feld mit Tastaturfokus im Overlay (Stufe C)
+        self._ov_caret = 0                        # Cursor darin (Zeichen ab Anfang)
+        self._ov_review: dict | None = None       # offene Pruefung (dasselbe Fenster wie im Steuerpult)
+        self._ov_typed = False                    # Eingabe seit dem letzten Bild -> sofort neu zeichnen
         self.nb.bind("<<NotebookTabChanged>>", lambda e: self._overlay_follow_tab())
         self._pump_job = self.after(150, self._pump)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -569,6 +573,16 @@ class App(tk.Tk):
         ttk.Button(bar, text="Schließen", command=win.destroy).pack(side="left")
         ana.insert("1.0", "Teil 1 – Analyse folgt …")
         ana.config(state="disabled")
+        # dieselbe Pruefung im Overlay (Anzeige, Vorschlag bearbeiten, Knoepfe) - verschwindet mit dem Fenster
+        self._ov_review = {"win": win, "title": title, "status": status, "ana": ana, "sug": sug, "take": take,
+                           "apply": apply, "again_full": again_full}
+
+        def closed(e):
+            if e.widget is win and self._ov_review and self._ov_review["win"] is win:
+                self._ov_review = None
+                if self._ov_focus == "rev_sug":
+                    self._ov_focus = None
+        win.bind("<Destroy>", closed, add="+")
 
         def done(res, err):
             if not win.winfo_exists():
@@ -837,16 +851,27 @@ class App(tk.Tk):
             tab=overlay_panel.TABS[self._ov_view - 1], running=bool(self.proc and self.proc.poll() is None),
             status=self.run_status.cget("text"), model=model, effort=self.effort_var.get(),
             interval=f"Plan alle {self.int_var.get()}/{self.cint_var.get()} s", control=control,
-            log=[l for l in log if l.strip()], orders_player=self.orders_player_text.get("1.0", "end").strip(),
-            orders_enemy=self.orders_enemy_text.get("1.0", "end").strip(), strategy_name=self.strat_var.get(),
-            strategy=self.strat_text.get("1.0", "end").strip(), deploy=self.deploy_text.get("1.0", "end").strip(),
+            log=[l for l in log if l.strip()], orders_player=self.orders_player_text.get("1.0", "end-1c"),
+            orders_enemy=self.orders_enemy_text.get("1.0", "end-1c"), strategy_name=self.strat_var.get(),
+            strategy=self.strat_text.get("1.0", "end-1c"), deploy=self.deploy_text.get("1.0", "end-1c"),
             units_side=self.units_side.get(), units=units, units_info=self.units_info.cget("text"),
             active_orders=self.active_orders.cget("text"), chat_target=self.chat_target.get(),
             chat_text=self.chat_var.get(), hotkeys={k: v.get() for k, v in self.hotkey_vars.items()},
             control_val=self.control_var.get(), own_groups=self.own_groups_var.get(), plan_s=self.int_var.get(),
             close_s=self.cint_var.get(), selected=tuple(self.units_tree.selection()), scroll=dict(self._ov_scroll),
             menu_open=self._ov_menu, log_view=self._log_view(), zone_on=self.zone_on_var.get(), zone_m=self._zone_m(),
-            pressed=self._ov_pressed[0] if self._ov_pressed and time.monotonic() - self._ov_pressed[1] < 0.3 else None)
+            pressed=self._ov_pressed[0] if self._ov_pressed and time.monotonic() - self._ov_pressed[1] < 0.3 else None,
+            focus=self._ov_focus, caret=self._ov_caret, review=self._ov_review_data())
+
+    def _ov_review_data(self) -> dict | None:
+        r = self._ov_review
+        if not r:
+            return None
+        try:
+            return {"title": r["title"], "status": r["status"].cget("text"), "analysis": r["ana"].get("1.0", "end-1c"),
+                    "proposal": r["sug"].get("1.0", "end-1c"), "done": str(r["take"].cget("state")) != "disabled"}
+        except tk.TclError:
+            return None
 
     def _overlay_tick(self) -> None:
         """F8-Zaehlung der DLL lesen, bei offenem Overlay das Bild neu zeichnen (bei Aenderung, sonst jede Sekunde -
@@ -867,6 +892,9 @@ class App(tk.Tk):
                     self._ov_view = (self._ov_view + 1) % (len(overlay_panel.TABS) + 1)
         expanded = bool(self._ov_view) and self.overlay_var.get()
         path = d / "overlay_panel.bin"
+        self._ov_typed = False
+        if not expanded or not self._ov_focus_ok():
+            self._ov_focus = None               # Feld nicht sichtbar -> Tastatur zurueck ans Spiel
         if not expanded:
             if self._ov_open_written:
                 self._ov_seq += 1
@@ -880,7 +908,7 @@ class App(tk.Tk):
             self._ov_key, self._ov_last = key, now
             self._ov_seq += 1
             img, self._ov_hots = overlay_panel.render(data)
-            overlay_panel.write_panel(img, path, self._ov_seq, True)
+            overlay_panel.write_panel(img, path, self._ov_seq, True, keyboard=bool(data.focus))
             self._ov_open_written = True
 
     # ---------- Overlay: Maus (Stufe B) ----------
@@ -903,6 +931,10 @@ class App(tk.Tk):
                 self._ov_scroll[key] = overlay_panel.scroll_to(self._ov_drag, y)
             elif kind == "up":
                 self._ov_drag = None
+            elif kind in ("key", "char"):
+                self._ov_typed = True
+                if self._ov_focus:
+                    self._ov_key_in(kind, x, y)
             elif kind == "wheel":
                 hot = next((h for h in self._ov_hots if h.action[0] == "scroll" and h.hit(x, y)), None)
                 if hot is not None:
@@ -917,13 +949,26 @@ class App(tk.Tk):
             self._ov_menu = False             # Klick neben das Menue schliesst es
             return
         if hot is None:
+            self._ov_focus = None
             return
         a = hot.action
         if a[0] == "scroll":
             if hot.bar and x >= hot.bar[0] - 3:                 # auf dem Scrollbalken: springen und ziehen
                 self._ov_scroll[a[1]] = overlay_panel.scroll_to(hot, y)
                 self._ov_drag = hot
+            elif a[1] in overlay_panel.EDITABLE:                # in den Text: Fokus und Cursor an die Klickstelle
+                self._ov_focus = a[1]
+                off = hot.offset_at(x, y)
+                self._ov_caret = len(self._ov_get(a[1])) if off is None else off
+            else:
+                self._ov_focus = None
             return
+        if a[0] == "chat_focus":
+            self._ov_focus = "chat"
+            self._ov_caret = len(self.chat_var.get())
+            return
+        if a[0] not in ("send", "chat_target"):
+            self._ov_focus = None                               # anderer Klick: Tastatur zurueck ans Spiel
         self._ov_pressed = (a, time.monotonic())
         try:
             self._ov_act(a)
@@ -961,8 +1006,15 @@ class App(tk.Tk):
                 self._overlay_note("F\u00fcr die Pr\u00fcfung wird ein API-Schl\u00fcssel gebraucht.")
             else:
                 self._review(a[1], widget, title)
-                self._overlay_note(f"{title}: Pr\u00fcfung l\u00e4uft - Ergebnis im Steuerpult-Fenster "
-                                   "(Anzeige im Overlay folgt mit Stufe C).")
+        elif k in ("rev_apply", "rev_again", "rev_close") and self._ov_review:
+            r = self._ov_review
+            if k == "rev_apply":
+                if str(r["take"].cget("state")) != "disabled":
+                    r["apply"]()
+            elif k == "rev_again":
+                r["again_full"]()
+            else:
+                r["win"].destroy()
         elif k == "units_side":
             self.units_side.set(a[1])
             self._refresh_units()
@@ -1014,13 +1066,104 @@ class App(tk.Tk):
         elif k == "m_close_menu":
             self._ov_menu = False
 
+    # ---------- Overlay: Tastatur (Stufe C) ----------
+    def _ov_widget(self, key: str):
+        if key == "rev_sug":
+            return self._ov_review["sug"] if self._ov_review else None
+        return {"orders_player": self.orders_player_text, "orders_enemy": self.orders_enemy_text,
+                "strategy": self.strat_text, "deploy": self.deploy_text}.get(key)
+
+    def _ov_get(self, key: str) -> str:
+        if key == "chat":
+            return self.chat_var.get()
+        w = self._ov_widget(key)
+        return w.get("1.0", "end-1c") if w is not None else ""
+
+    def _ov_focus_ok(self) -> bool:
+        """Fokusfeld ist im Overlay gerade sichtbar (sonst gehoert die Tastatur wieder dem Spiel)."""
+        f = self._ov_focus
+        if f is None or f == "chat":
+            return True
+        if self._ov_review:
+            return f == "rev_sug"
+        tab = overlay_panel.TABS[self._ov_view - 1] if self._ov_view else ""
+        return {"orders_player": "Befehle", "orders_enemy": "Befehle", "strategy": "Strategie",
+                "deploy": "Aufstellung"}.get(f) == tab
+
+    def _ov_edit(self, key: str, start: int, end: int, new: str) -> None:
+        """Zeichen start..end durch new ersetzen - im selben Tk-Feld wie im Steuerpult (beide bleiben synchron)."""
+        if key == "chat":
+            t = self.chat_var.get()
+            self.chat_var.set(t[:start] + new + t[end:])
+        else:
+            w = self._ov_widget(key)
+            if w is None:
+                return
+            if end > start:
+                w.delete(f"1.0 + {start} chars", f"1.0 + {end} chars")
+            if new:
+                w.insert(f"1.0 + {start} chars", new)
+            if key != "rev_sug":
+                self._schedule_save()
+        self._ov_caret = start + len(new)
+
+    def _ov_key_in(self, kind: str, code: int, mods: int) -> None:
+        key = self._ov_focus
+        text = self._ov_get(key)
+        c = min(max(self._ov_caret, 0), len(text))
+        self._ov_caret = c
+        if kind == "char":
+            ch = chr(code)
+            if ch.isprintable():
+                self._ov_edit(key, c, c, ch)
+            return
+        ctrl = bool(mods & 1)
+        hot = next((h for h in self._ov_hots if h.action == ("scroll", key)), None)
+        if code == 27:                                   # Esc: fertig
+            self._ov_focus = None
+        elif code == 13:                                 # Enter: Chat sendet, sonst neue Zeile
+            if key == "chat":
+                if not self.chat_var.get().strip():
+                    pass
+                elif self.proc and self.proc.poll() is None:
+                    self._send_order()
+                    self._ov_caret = 0
+                else:
+                    self._overlay_note("Der Feldherr l\u00e4uft nicht - Befehl nicht gesendet.")
+            else:
+                self._ov_edit(key, c, c, "\n")
+        elif code == 8 and c > 0:                        # Backspace
+            self._ov_edit(key, c - 1, c, "")
+        elif code == 46 and c < len(text):               # Entf
+            self._ov_edit(key, c, c + 1, "")
+        elif code == 37:
+            self._ov_caret = max(c - 1, 0)
+        elif code == 39:
+            self._ov_caret = min(c + 1, len(text))
+        elif code in (36, 35):                           # Pos1 / Ende (Strg: ganzer Text)
+            if ctrl or key == "chat":
+                self._ov_caret = 0 if code == 36 else len(text)
+            else:
+                self._ov_caret = overlay_panel.caret_move(text, c, hot, "home" if code == 36 else "end")
+        elif code in (38, 40) and key != "chat":         # hoch / runter
+            self._ov_caret = overlay_panel.caret_move(text, c, hot, "up" if code == 38 else "down")
+        elif code == 86 and ctrl:                        # Strg+V
+            try:
+                clip = self.clipboard_get()
+            except tk.TclError:
+                clip = ""
+            if key == "chat":
+                clip = " ".join(clip.split())
+            if clip:
+                self._ov_edit(key, c, c, clip.replace("\r\n", "\n"))
+
     def _pump(self) -> None:
         self._pump_n = getattr(self, "_pump_n", 0) + 1
         try:
             self._overlay_events()          # Mausklicks aus dem Overlay (jede Runde, ~0,15 s)
         except Exception as e:
             self._overlay_note(f"Eingabe: {e}")
-        if self._pump_n % 2 == 0 or self._ov_pressed or self._ov_drag:   # Overlay neu zeichnen
+        if self._pump_n % 2 == 0 or self._ov_pressed or self._ov_drag or self._ov_typed:   # Overlay neu zeichnen
             try:
                 self._overlay_tick()
             except Exception as e:  # das Overlay darf das Steuerpult nie stoeren

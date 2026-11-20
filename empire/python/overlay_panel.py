@@ -9,7 +9,8 @@ Austausch ueber den Bridge-Ordner (<Spiel>/ai_bridge):
                       flags bit 0 = aufgeklappt (sonst zeigt die DLL die Meldungsleiste aus overlay.txt)
   overlay_keys.txt    von der DLL: "f8=<Anzahl F8-Druecke>" - jeder Druck klappt auf bzw. wechselt den Tab
   overlay_input.txt   von der DLL (wird fortgeschrieben): "<n> down|up|drag|wheel <x> <y> [<delta>]" in
-                      Panel-Koordinaten (Stufe B)
+                      Panel-Koordinaten (Stufe B); "<n> key <vk> <mods>" und "<n> char <code>" (Stufe C)
+                      flags bit 1 im Bildkopf = ein Feld hat den Fokus -> die DLL leitet die Tastatur hierher um
 
 render() liefert das Bild UND die klickbaren Bereiche (Hot), damit das Steuerpult einen Klick der richtigen Aktion
 zuordnen kann - Bild und Trefferflaechen stammen so aus derselben Zeichnung.
@@ -98,6 +99,9 @@ class PanelData:
     zone_on: bool = True
     zone_m: int = 30
     pressed: tuple | None = None                           # gerade gedrueckte Aktion (Rueckmeldung beim Klick)
+    focus: str | None = None                               # Feld mit Tastaturfokus (EDITABLE oder "chat")
+    caret: int = 0                                         # Cursor im Fokusfeld (Zeichen ab Anfang)
+    review: dict | None = None                             # offene Pruefung: title, status, analysis, proposal, done
 
 
 @dataclass
@@ -112,6 +116,22 @@ class Hot:
     visible: int = 0
     first: int = 0
     bar: tuple | None = None        # (x0, y0, x1, y1) des Scrollbalkens
+    lines: list | None = None       # Textfeld: sichtbare Zeilen [(Text, Startzeichen)] fuer Klick -> Cursor
+    tx: int = 0                     # linke Kante des Texts
+    ty: int = 0                     # Oberkante der ersten sichtbaren Zeile
+    fsize: int = 12
+
+    def offset_at(self, x: int, y: int) -> int | None:
+        """Klick im Textfeld -> Zeichenposition (fuer den Cursor)."""
+        if not self.lines:
+            return None
+        i = min(max((y - self.ty) // LINE_H, 0), len(self.lines) - 1)
+        line, start = self.lines[i]
+        f = font(self.fsize)
+        col = 0
+        while col < len(line) and f.getlength(line[:col + 1]) - f.getlength(line[col]) / 2 < x - self.tx:
+            col += 1
+        return start + col
 
     def hit(self, x: int, y: int) -> bool:
         return self.x0 <= x <= self.x1 and self.y0 <= y <= self.y1
@@ -140,6 +160,39 @@ def _wrap(text: str, f: ImageFont.FreeTypeFont, width: int) -> list[str]:
                     word = word[cut:]
                 line = word
         out.append(line)
+    return out
+
+
+EDITABLE = ("orders_player", "orders_enemy", "strategy", "deploy", "rev_sug")
+
+
+def _wrap_off(text: str, f: ImageFont.FreeTypeFont, width: int) -> list[tuple[str, int]]:
+    """Wie _wrap, aber mit der Startposition jeder Zeile im Text (fuer Cursor und Klick)."""
+    out: list[tuple[str, int]] = []
+    pos = 0
+    for para in (text or "").split("\n"):
+        if not para:
+            out.append(("", pos))
+        else:
+            line, lstart, i = "", pos, 0
+            while i < len(para):
+                j = para.find(" ", i)
+                word = para[i:] if j < 0 else para[i:j + 1]          # Wort mit folgendem Leerzeichen
+                if line and f.getlength(line + word.rstrip()) > width:
+                    out.append((line, lstart))
+                    line, lstart = "", pos + i
+                while not line and f.getlength(word.rstrip()) > width and len(word) > 1:   # ueberlang
+                    cut = len(word)
+                    while cut > 1 and f.getlength(word[:cut]) > width:
+                        cut -= 1
+                    out.append((word[:cut], pos + i))
+                    i += cut
+                    word = word[cut:]
+                    lstart = pos + i
+                line += word
+                i += len(word)
+            out.append((line, lstart))
+        pos += len(para) + 1
     return out
 
 
@@ -173,28 +226,47 @@ class Painter:
         d.rounded_rectangle((x + 1, ty, x + 5, ty + th), 2, fill=(130, 134, 150, 255))
 
     def textbox(self, key: str, box: tuple[int, int, int, int], text: str, *, title: str = "",
-                follow_end: bool = False, colors=None, f=None) -> None:
-        """Feld mit Rahmen, umbrochenem Text und Scrollbalken; Scrollstand aus p.scroll[key]."""
+                follow_end: bool = False, colors=None, f=None, fsize: int = 12) -> None:
+        """Feld mit Rahmen, umbrochenem Text und Scrollbalken; Scrollstand aus p.scroll[key]. Hat das Feld den
+        Fokus: goldener Rahmen und Cursor (das Feld scrollt so, dass der Cursor sichtbar bleibt)."""
         x0, y0, x1, y1 = box
-        f = f or font(12)
+        f = f or font(fsize)
         d = self.d
+        focused = self.p.focus == key
         if title:
             d.text((x0, y0), title, font=font(11, True), fill=GOLD)
+            if key in EDITABLE:
+                hint = "Esc = fertig" if focused else "klicken zum Bearbeiten"
+                d.text((x0 + f.getlength(title) + 26, y0 + 1), hint, font=font(10), fill=MUTED if not focused else BLUE)
             y0 += 17
-        d.rectangle((x0, y0, x1, y1), fill=PANEL, outline=EDGE)
-        lines = _wrap(text, f, x1 - x0 - 20)
+        d.rectangle((x0, y0, x1, y1), fill=PANEL, outline=GOLD if focused else EDGE, width=2 if focused else 1)
+        lines = _wrap_off(text, f, x1 - x0 - 20)
         visible = max((y1 - y0 - 6) // LINE_H, 1)
         maxfirst = max(len(lines) - visible, 0)
         first = self.p.scroll.get(key)
         if first is None:
             first = maxfirst if follow_end else 0
+        cline = None
+        if focused:
+            caret = min(max(self.p.caret, 0), len(text))
+            cline = max((i for i, (_, st) in enumerate(lines) if st <= caret), default=0)
+            if cline < first:
+                first = cline
+            elif cline >= first + visible:
+                first = cline - visible + 1
         first = min(max(first, 0), maxfirst)
-        for i, line in enumerate(lines[first:first + visible]):
+        shown = lines[first:first + visible]
+        for i, (line, _) in enumerate(shown):
             d.text((x0 + 6, y0 + 3 + i * LINE_H), line, font=f, fill=colors(line) if colors else TEXT)
+        if focused and cline is not None and first <= cline < first + visible:
+            line, st = lines[cline]
+            cx = x0 + 6 + int(f.getlength(line[:caret - st]))
+            cy = y0 + 3 + (cline - first) * LINE_H
+            d.line((cx, cy + 1, cx, cy + LINE_H - 2), fill=GOLD, width=2)
         bar = (x1 - 9, y0 + 2, x1 - 3, y1 - 2)
         self.scrollbar(x1 - 9, y0 + 2, y1 - y0 - 4, len(lines), visible, first)
         self.hots.append(Hot(x0, y0, x1, y1, ("scroll", key), total=len(lines), visible=visible, first=first,
-                             bar=bar))
+                             bar=bar, lines=shown, tx=x0 + 6, ty=y0 + 3, fsize=fsize))
 
 
 def log_category(line: str) -> str:
@@ -244,7 +316,9 @@ def render(p: PanelData) -> tuple[Image.Image, list[Hot]]:
     pt.hots.append(Hot(W - 40, 6, W - 12, 28, ("menu",)))
 
     top, bottom_y = 36, H - 36
-    if p.tab == "Feldherr":
+    if p.review:
+        _review_view(pt, top, bottom_y)
+    elif p.tab == "Feldherr":
         x = x0 = 12
         x = pt.button(x, top, "\u25a0 Stoppen" if p.running else "    Starten", ("stop",) if p.running else ("start",),
                       accent=True)
@@ -320,9 +394,22 @@ def render(p: PanelData) -> tuple[Image.Image, list[Hot]]:
     d.text((12, cy + 3), "Befehl an", font=font(11), fill=MUTED)
     tx = pt.button(68, cy, f"{p.chat_target}    ", ("chat_target",))
     d.polygon([(tx - 20, cy + 8), (tx - 12, cy + 8), (tx - 16, cy + 13)], fill=TEXT)   # Pfeil der Auswahl
-    d.rectangle((tx, cy, W - 86, cy + 20), fill=PANEL, outline=EDGE)
-    ct = p.chat_text or "Befehl eingeben \u2026"
-    d.text((tx + 6, cy + 3), ct[-60:], font=font(11), fill=TEXT if p.chat_text else MUTED)
+    chat_focus = p.focus == "chat"
+    d.rectangle((tx, cy, W - 86, cy + 20), fill=PANEL, outline=GOLD if chat_focus else EDGE, width=2 if chat_focus else 1)
+    pt.hots.append(Hot(tx, cy, W - 86, cy + 20, ("chat_focus",)))
+    f11 = font(11)
+    if p.chat_text or chat_focus:
+        caret = min(max(p.caret if chat_focus else len(p.chat_text), 0), len(p.chat_text))
+        start = 0                                   # langen Text links abschneiden, Cursor sichtbar halten
+        while f11.getlength(p.chat_text[start:caret]) > (W - 86 - tx - 16):
+            start += 1
+        shown = p.chat_text[start:]
+        d.text((tx + 6, cy + 3), shown, font=f11, fill=TEXT)
+        if chat_focus:
+            cx = tx + 6 + int(f11.getlength(p.chat_text[start:caret]))
+            d.line((cx, cy + 4, cx, cy + 16), fill=GOLD, width=2)
+    else:
+        d.text((tx + 6, cy + 3), "Befehl eingeben \u2026 (klicken)", font=f11, fill=MUTED)
     pt.button(W - 80, cy, "Senden", ("send",), enabled=p.running and bool(p.chat_text.strip()))
 
     if p.menu_open:
@@ -331,6 +418,23 @@ def render(p: PanelData) -> tuple[Image.Image, list[Hot]]:
     # Menue-Knoepfe vor der Menueflaeche (m_none), diese vor allem darunter
     pt.hots.sort(key=lambda h: 1 if h.action == ("m_none",) else (0 if h.action[0].startswith("m_") else 2))
     return pt.img, pt.hots
+
+
+def _review_view(pt: Painter, top: int, bottom_y: int) -> None:
+    """Pruefen & verbessern im Overlay: Analyse (lesen), Vorschlag (bearbeitbar), Uebernehmen/Neu/Schliessen -
+    dieselben Felder wie das Pruefen-Fenster des Steuerpults."""
+    p, d = pt.p, pt.d
+    r = p.review
+    d.text((12, top), f"Pr\u00fcfen & verbessern \u2013 {r.get('title', '')}", font=font(12, True), fill=GOLD)
+    st = r.get("status", "")
+    d.text((12, top + 17), st[:95], font=font(10), fill=GREEN if r.get("done") else MUTED)
+    mid = top + 34 + (bottom_y - top - 34 - 28) // 2
+    pt.textbox("rev_ana", (12, top + 34, W - 12, mid - 2), r.get("analysis", ""), f=font(11), fsize=11)
+    pt.textbox("rev_sug", (12, mid + 2, W - 12, bottom_y - 28), r.get("proposal", ""),
+               title="Vorschlag (bearbeitbar)", f=font(11), fsize=11)
+    x = pt.button(12, bottom_y - 24, "\u00dcbernehmen", ("rev_apply",), enabled=bool(r.get("done")), accent=True)
+    x = pt.button(x, bottom_y - 24, "Alles neu pr\u00fcfen", ("rev_again",))
+    pt.button(x, bottom_y - 24, "Schlie\u00dfen", ("rev_close",))
 
 
 def _menu(pt: Painter) -> None:
@@ -384,10 +488,12 @@ def scroll_to(hot: Hot, y: int) -> int:
     return int(round(frac * (hot.total - hot.visible)))
 
 
-def write_panel(img: Image.Image | None, path: Path, seq: int, expanded: bool) -> None:
-    """Bild fuer die DLL schreiben (atomar). Zugeklappt: nur Kopf mit flags=0, keine Pixel."""
+def write_panel(img: Image.Image | None, path: Path, seq: int, expanded: bool, keyboard: bool = False) -> None:
+    """Bild fuer die DLL schreiben (atomar). Zugeklappt: nur Kopf mit flags=0, keine Pixel.
+    keyboard=True (flags bit 1): ein Feld hat den Fokus - die DLL leitet die Tastatur ins Overlay um."""
     w, h = (img.size if img is not None and expanded else (0, 0))
-    head = struct.pack("<4sIIII", b"EBOV", w, h, seq, 1 if expanded else 0)
+    flags = (1 if expanded else 0) | (2 if expanded and keyboard else 0)
+    head = struct.pack("<4sIIII", b"EBOV", w, h, seq, flags)
     data = head + (img.tobytes("raw", "BGRA") if img is not None and expanded else b"")
     tmp = path.with_suffix(".tmp")
     tmp.write_bytes(data)
@@ -411,6 +517,33 @@ def read_f8(path: Path) -> int | None:
             except ValueError:
                 return None
     return None
+
+
+def caret_move(text: str, caret: int, hot: "Hot | None", how: str) -> int:
+    """Cursor in umbrochenen Zeilen bewegen: how = up, down, home, end (Breite/Schrift aus dem Feld des Bilds)."""
+    caret = min(max(caret, 0), len(text))
+    if hot is None:
+        return {"up": 0, "home": 0}.get(how, len(text))
+    f = font(hot.fsize)
+    lines = _wrap_off(text, f, hot.x1 - hot.x0 - 20)
+    i = max((k for k, (_, st) in enumerate(lines) if st <= caret), default=0)
+    line, st = lines[i]
+    if how == "home":
+        return st
+    if how == "end":
+        wrapped = i + 1 < len(lines) and lines[i + 1][1] == st + len(line)
+        return st + (len(line.rstrip(" ")) if wrapped else len(line))
+    px = f.getlength(line[:caret - st])
+    j = i + (-1 if how == "up" else 1)
+    if j < 0:
+        return 0
+    if j >= len(lines):
+        return len(text)
+    line, st = lines[j]
+    col = 0
+    while col < len(line) and f.getlength(line[:col + 1]) - f.getlength(line[col]) / 2 < px:
+        col += 1
+    return st + col
 
 
 class InputReader:
@@ -442,7 +575,7 @@ class InputReader:
         out = []
         for line in data[:end].decode("ascii", "ignore").splitlines():
             parts = line.split()
-            if len(parts) >= 4 and parts[1] in ("down", "up", "drag", "wheel"):
+            if len(parts) >= 4 and parts[1] in ("down", "up", "drag", "wheel", "key", "char"):
                 try:
                     out.append((parts[1], int(parts[2]), int(parts[3]), int(parts[4]) if len(parts) > 4 else 0))
                 except ValueError:
