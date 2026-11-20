@@ -62,6 +62,10 @@ extra conditions). Only make vague wording concrete where the player's meaning i
 reflexes (engage_within_m, keep_range_m, near/routed/arrived/after reflexes, fire_at_will, skirmish) or targets \
 (unit names/ids, roles like general, artillery, cavalry) the general has. If something cannot be ordered (e.g. \
 ammunition type, formation type), say so in the analysis and rephrase it to the closest executable behaviour.
+- Staying in place is halt, not move: if the player wants units to stay where they stand ("bleibt stehen", \
+"hält die Position", "bleibt unverändert in Linie"), write halt (with engage_within_m if they may strike back). \
+Never write "move ... an der aktuellen Position" or "move to the current position": a move re-forms the group \
+around a new target point and makes the units leave their places.
 - If an open line is already good, return it unchanged.
 - When a CURRENT BATTLEFIELD is given (live from the running battle), the player's lines refer to that army: check \
 each line against it - which real units are meant (names as listed, e.g. 'Infanterie 2', 'Artillerie 1'), whether \

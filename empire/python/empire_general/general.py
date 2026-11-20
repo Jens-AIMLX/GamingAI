@@ -43,7 +43,10 @@ face the way they march; a line forms when they arrive.
 - attack: every unit of the group attacks target_unit: infantry and artillery move into range and fire at it, \
 cavalry charges it. run=true for a charge. Changing a target cancels a charge in progress, so keep targets \
 steady. on_target_lost: "nearest" (default) = attack the nearest enemy when the target breaks, "halt" = stop.
-- halt: stop where they are.
+- halt: stop where they are. Use halt whenever units are to STAY where they stand ("hold the position", "stay in \
+line", "remain unchanged", "keep the current place"), with engage_within_m if they may strike back. Never give \
+move to the place where a group already stands: move re-forms the group as a new line around the target point \
+(ref "front" = the centre of the front), so the units would leave their places and bunch up or swap places.
 - withdraw: the units leave the battlefield (they march off the map and are saved).
 Reflexes per group (the executor reacts within a second, without you):
 - engage_within_m (move, halt): a unit attacks any enemy that comes this close to its place and returns when \
