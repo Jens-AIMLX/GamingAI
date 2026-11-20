@@ -76,8 +76,16 @@ def parse_hotkeys(spec: str) -> dict[str, tuple[str, int, int]]:
     return out
 
 
+SAY_HOOKS: list = []          # z. B. Overlay-Spiegel - bekommt jede Zeile, die ins Steuerpult geht
+
+
 def say(msg: str) -> None:
     print(msg, flush=True)
+    for hook in SAY_HOOKS:
+        try:
+            hook(msg)
+        except Exception:
+            pass   # das Overlay darf den Feldherrn nie stoeren
 
 
 # ---------------- Hotkeys (Low-Level-Tastatur-Hook, ohne Zusatzpaket) ----------------
@@ -362,8 +370,9 @@ def main() -> int:
     last_seq, last_time = -1, -1.0
     battle_over = False
     reported_grouped: set[int] = set()
-    feed = OverlayFeed(br.dir / "overlay.txt")       # Meldungen fuer das Overlay im Spielbild
-    feed.add("-", f"Feldherr gestartet ({args.model or args.backend}) - wartet auf eine Schlacht")
+    feed = OverlayFeed(br.dir / "overlay.txt")       # Overlay im Spielbild = Spiegel dieses Protokolls
+    SAY_HOOKS.append(lambda line: feed.mirror(line, (w.player_alliance or 1) if w is not None else 1))
+    feed.mirror(f"Feldherr gestartet ({args.model or args.backend}) - wartet auf eine Schlacht")
 
     def stamp(t: float) -> str:
         """Zeit fuer das Protokoll im Steuerpult: Schlachtzeit mm:ss wie im Overlay (vor Schlachtbeginn: Spieluhr)."""
@@ -376,11 +385,6 @@ def main() -> int:
         if logf:
             logf.write(json.dumps(entry, ensure_ascii=False) + "\n")
             logf.flush()
-        try:
-            bt = w.battle_time_at(entry["t"]) if w is not None and "t" in entry and w.battle_start is not None else None
-            feed.from_log(entry, (w.player_alliance or 1) if w is not None else 1, bt)
-        except Exception:
-            pass   # das Overlay darf den Feldherrn nie stoeren
         if entry["type"] == "plan":
             say(f"[{stamp(entry['t'])}] Plan Allianz {entry['alliance']} ({entry['secs']} s): {entry['plan']['intent']}")
         elif entry["type"] == "deploy":
@@ -503,7 +507,6 @@ def main() -> int:
                 logf.close()
             logf = (logdir / time.strftime("battle_%Y%m%d_%H%M%S.jsonl")).open("w", encoding="utf-8")
             say("Neue Schlacht erkannt.")
-            feed.add("-", "Neue Schlacht erkannt - Feldherr bereit")
         w.update(st)
         grouped = {u.id for u in w.units.values() if u.grouped and not u.manual}
         if grouped - reported_grouped:

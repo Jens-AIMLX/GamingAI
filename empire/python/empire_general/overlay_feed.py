@@ -1,15 +1,14 @@
 """Meldungen fuer das Overlay im Spielbild (ai_bridge/overlay.txt).
 
-Der Feldherr schreibt hier die letzten Meldungen hinein, die DLL (dll/overlay.c) liest die Datei jede Sekunde und
-zeichnet sie unten links ins Spielbild. Format: UTF-8, eine Zeile je Bildschirmzeile, das erste Zeichen bestimmt
-die Farbe und wird nicht angezeigt:
-    +  aktueller Plan meiner Armee (hellgruen)   -  Plan des Gegners / Hinweis (grau)
-    >  eigener Befehl (hellblau)                 *  Antwort des Feldherrn (weiss)
+Das Overlay SPIEGELT das Protokoll des Steuerpults: dieselben Zeilen in derselben Reihenfolge, die neuesten unten
+(vorher eigene Auswahl mit festen Plaenen oben - wirkte dadurch nicht synchron, Schlacht 2026-11-20 13:0x).
+Der Feldherr ruft mirror() fuer jede Zeile auf, die er ins Steuerpult schreibt; die DLL (dll/overlay.c) liest die
+Datei jede Sekunde. Format: UTF-8, eine Zeile je Bildschirmzeile, das erste Zeichen bestimmt die Farbe und wird
+nicht angezeigt:
+    +  Plan meiner Armee (hellgruen)      -  Plan des Gegners / Hinweis (grau)
+    >  eigener Befehl (hellblau)          *  Antwort des Feldherrn (weiss)
     !  Warnung / Fehler (orange)
-Oben stehen fest die aktuellen Plaene (eigene Armee, Gegner), darunter die letzten Ereignisse (Befehle, Antworten,
-Warnungen, Hinweise) - sonst wuerden die Plaene alle paar Sekunden die Ereignisse verdraengen bzw. ohne Plaene bliebe
-das Feld nach der Aufstellung stehen (Schlacht 2026-11-20 12:41).
-Lange Meldungen werden hier umbrochen (hoechstens zwei Zeilen je Meldung), die DLL zeichnet die Zeilen nur.
+Lange Zeilen werden umbrochen (hoechstens zwei Bildschirmzeilen, dann ...).
 """
 from __future__ import annotations
 
@@ -21,8 +20,9 @@ from pathlib import Path
 
 WIDTH = 74          # Zeichen je Zeile (Segoe UI 16 px: ~600 px)
 MAX_LINES = 2       # Zeilen je Meldung
-MAX_MESSAGES = 4    # Ereignisse unter den Plaenen
+MAX_MESSAGES = 6    # letzte Protokollzeilen
 
+PLAN = re.compile(r"(?:Plan|Aufstellungsplan) Allianz (\d+)")
 ACK = re.compile(r"Feldherr Allianz (\d+) zum Befehl .*?: (.*)$", re.S)
 
 
@@ -49,11 +49,30 @@ class OverlayFeed:
             self.plans[side] = (kind, self._stamp(battle_time) + text)
             self.write()
 
+    def mirror(self, line: str, player_alliance: int = 1) -> None:
+        """Eine Zeile des Steuerpult-Protokolls uebernehmen (Farbe nach Inhalt)."""
+        line = " ".join(str(line).split())
+        if not line:
+            return
+        m = PLAN.search(line)
+        if m:
+            kind = "+" if int(m.group(1)) == player_alliance else "-"
+        elif "Befehl an die" in line:
+            kind = ">"
+        elif "zum Befehl" in line:
+            kind = "*"
+        elif "FEHLER" in line or "ACHTUNG" in line or "Fehler" in line:
+            kind = "!"
+        else:
+            kind = "-"
+        self.msgs.append((kind, line))
+        self.write()
+
     def write(self) -> None:
         lines: list[str] = []
-        entries = [self.plans[k] for k in ("mine", "enemy") if k in self.plans] + list(self.msgs)
+        entries = list(self.msgs)
         for kind, text in entries:
-            parts = textwrap.wrap(text, WIDTH, subsequent_indent="       ") or [""]
+            parts = textwrap.wrap(text, WIDTH, subsequent_indent="        ") or [""]
             if len(parts) > MAX_LINES:
                 parts = parts[:MAX_LINES]
                 parts[-1] = parts[-1][:WIDTH - 1].rstrip() + "…"
