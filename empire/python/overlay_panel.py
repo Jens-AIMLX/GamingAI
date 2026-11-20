@@ -2,21 +2,23 @@
 overlay_panel.py - kompakte Bedienoberflaeche des Steuerpults fuer das Overlay im Spielbild.
 
 Das Steuerpult (ui.py) zeichnet hier ein Bild seiner eigenen Daten - dieselben Texte, Listen und Zustaende wie im
-Fenster, deshalb sind beide immer synchron. Die DLL (dll/overlay.c) zeigt das Bild an.
+Fenster, deshalb sind beide immer synchron. Die DLL (dll/overlay.c) zeigt das Bild an und meldet Mauseingaben.
 
 Austausch ueber den Bridge-Ordner (<Spiel>/ai_bridge):
   overlay_panel.bin   vom Steuerpult: Kopf (5 x uint32: 'EBOV', Breite, Hoehe, seq, flags) + BGRA-Pixel
                       flags bit 0 = aufgeklappt (sonst zeigt die DLL die Meldungsleiste aus overlay.txt)
   overlay_keys.txt    von der DLL: "f8=<Anzahl F8-Druecke>" - jeder Druck klappt auf bzw. wechselt den Tab
+  overlay_input.txt   von der DLL (wird fortgeschrieben): "<n> down|up|drag|wheel <x> <y> [<delta>]" in
+                      Panel-Koordinaten (Stufe B)
 
-Stufe A: nur Anzeige. F8 schaltet: zu -> Feldherr -> Befehle -> Strategie -> Aufstellung -> Einheiten -> zu.
-Ein Tab-Wechsel im Steuerpult-Fenster zeigt (bei offenem Overlay) denselben Tab.
+render() liefert das Bild UND die klickbaren Bereiche (Hot), damit das Steuerpult einen Klick der richtigen Aktion
+zuordnen kann - Bild und Trefferflaechen stammen so aus derselben Zeichnung.
 """
 from __future__ import annotations
 
 import os
 import struct
-import textwrap
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -24,6 +26,8 @@ from PIL import Image, ImageDraw, ImageFont
 
 W, H = 560, 360
 TABS = ["Feldherr", "Befehle", "Strategie", "Aufstellung", "Einheiten"]
+CONTROLS = [("Gegner", "enemy"), ("Meine Armee", "player"), ("Beide", "both"), ("Aus", "none")]
+EFFORTS = ["low", "medium", "high"]
 
 BG = (20, 22, 28, 215)
 PANEL = (34, 37, 46, 235)
@@ -36,6 +40,8 @@ GREEN = (170, 225, 150, 255)
 ORANGE = (255, 170, 80, 255)
 BUTTON = (58, 63, 78, 255)
 BUTTON_OFF = (44, 47, 58, 255)
+SELECT = (70, 90, 130, 255)
+LINE_H = 16
 
 _FONTS: dict[tuple[str, int], ImageFont.FreeTypeFont] = {}
 
@@ -60,7 +66,11 @@ class PanelData:
     model: str = ""
     effort: str = ""
     interval: str = ""
-    control: str = ""
+    control: str = ""            # Anzeige ("Beide Seiten")
+    control_val: str = ""        # Wert ("both")
+    own_groups: bool = False
+    plan_s: int = 10
+    close_s: int = 5
     log: list[str] = field(default_factory=list)
     orders_player: str = ""
     orders_enemy: str = ""
@@ -68,12 +78,33 @@ class PanelData:
     strategy: str = ""
     deploy: str = ""
     units_side: str = "player"
-    units: list[tuple] = field(default_factory=list)       # (Name, Typ, Mann, Lage, Fuehrung, Status)
+    units: list[tuple] = field(default_factory=list)       # (Name, Typ, Mann, Lage, Fuehrung, Status, bid)
+    selected: tuple = ()                                   # markierte bids (wie im Fenster)
     units_info: str = ""
     active_orders: str = ""
     chat_target: str = "Meine Armee"
     chat_text: str = ""
     hotkeys: dict = field(default_factory=dict)
+    scroll: dict = field(default_factory=dict)             # Feld -> erste sichtbare Zeile (log: None = Ende)
+    menu_open: bool = False
+    pressed: tuple | None = None                           # gerade gedrueckte Aktion (Rueckmeldung beim Klick)
+
+
+@dataclass
+class Hot:
+    """Klickbarer Bereich: Rechteck + Aktion. Scrollbereiche tragen ihre Kennzahlen fuer Rad und Balken."""
+    x0: int
+    y0: int
+    x1: int
+    y1: int
+    action: tuple
+    total: int = 0
+    visible: int = 0
+    first: int = 0
+    bar: tuple | None = None        # (x0, y0, x1, y1) des Scrollbalkens
+
+    def hit(self, x: int, y: int) -> bool:
+        return self.x0 <= x <= self.x1 and self.y0 <= y <= self.y1
 
 
 def _wrap(text: str, f: ImageFont.FreeTypeFont, width: int) -> list[str]:
@@ -102,42 +133,58 @@ def _wrap(text: str, f: ImageFont.FreeTypeFont, width: int) -> list[str]:
     return out
 
 
-def _button(d: ImageDraw.ImageDraw, x: int, y: int, label: str, enabled: bool = True, accent: bool = False) -> int:
-    f = font(11, True)
-    w = int(f.getlength(label)) + 14
-    d.rounded_rectangle((x, y, x + w, y + 20), 4, fill=BUTTON if enabled else BUTTON_OFF,
-                        outline=GOLD if accent else EDGE)
-    d.text((x + 7, y + 3), label, font=f, fill=TEXT if enabled else MUTED)
-    return x + w + 6
+class Painter:
+    def __init__(self, p: PanelData) -> None:
+        self.p = p
+        self.img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        self.d = ImageDraw.Draw(self.img)
+        self.hots: list[Hot] = []
 
+    def button(self, x: int, y: int, label: str, action: tuple | None, enabled: bool = True,
+               accent: bool = False) -> int:
+        f = font(11, True)
+        w = int(f.getlength(label)) + 14
+        pressed = action is not None and self.p.pressed == action
+        fill = (90, 80, 50, 255) if pressed else (BUTTON if enabled else BUTTON_OFF)
+        self.d.rounded_rectangle((x, y, x + w, y + 20), 4, fill=fill, outline=GOLD if accent else EDGE)
+        self.d.text((x + 7, y + 3), label, font=f, fill=TEXT if enabled else MUTED)
+        if action is not None and enabled:
+            self.hots.append(Hot(x, y, x + w, y + 20, action))
+        return x + w + 6
 
-def _scrollbar(d: ImageDraw.ImageDraw, x: int, y: int, h: int, total: int, visible: int, first: int) -> None:
-    d.rectangle((x, y, x + 6, y + h), fill=(28, 30, 38, 255))
-    if total <= visible or total <= 0:
-        d.rectangle((x + 1, y + 1, x + 5, y + h - 1), fill=(70, 74, 88, 255))
-        return
-    th = max(14, int(h * visible / total))
-    ty = y + int((h - th) * first / max(total - visible, 1))
-    d.rounded_rectangle((x + 1, ty, x + 5, ty + th), 2, fill=(130, 134, 150, 255))
+    def scrollbar(self, x: int, y: int, h: int, total: int, visible: int, first: int) -> None:
+        d = self.d
+        d.rectangle((x, y, x + 6, y + h), fill=(28, 30, 38, 255))
+        if total <= visible or total <= 0:
+            d.rectangle((x + 1, y + 1, x + 5, y + h - 1), fill=(70, 74, 88, 255))
+            return
+        th = max(14, int(h * visible / total))
+        ty = y + int((h - th) * first / max(total - visible, 1))
+        d.rounded_rectangle((x + 1, ty, x + 5, ty + th), 2, fill=(130, 134, 150, 255))
 
-
-def _textbox(d: ImageDraw.ImageDraw, box: tuple[int, int, int, int], text: str, *, title: str = "",
-             bottom: bool = False, colors=None, f=None) -> None:
-    """Feld mit Rahmen, umbrochenem Text und Scrollbalken. bottom=True zeigt das Ende (Protokoll)."""
-    x0, y0, x1, y1 = box
-    f = f or font(12)
-    if title:
-        d.text((x0, y0), title, font=font(11, True), fill=GOLD)
-        y0 += 17
-    d.rectangle((x0, y0, x1, y1), fill=PANEL, outline=EDGE)
-    lh = 16
-    lines = _wrap(text, f, x1 - x0 - 20)
-    visible = max((y1 - y0 - 6) // lh, 1)
-    first = max(len(lines) - visible, 0) if bottom else 0
-    for i, line in enumerate(lines[first:first + visible]):
-        col = colors(line) if colors else TEXT
-        d.text((x0 + 6, y0 + 3 + i * lh), line, font=f, fill=col)
-    _scrollbar(d, x1 - 9, y0 + 2, y1 - y0 - 4, len(lines), visible, first)
+    def textbox(self, key: str, box: tuple[int, int, int, int], text: str, *, title: str = "",
+                follow_end: bool = False, colors=None, f=None) -> None:
+        """Feld mit Rahmen, umbrochenem Text und Scrollbalken; Scrollstand aus p.scroll[key]."""
+        x0, y0, x1, y1 = box
+        f = f or font(12)
+        d = self.d
+        if title:
+            d.text((x0, y0), title, font=font(11, True), fill=GOLD)
+            y0 += 17
+        d.rectangle((x0, y0, x1, y1), fill=PANEL, outline=EDGE)
+        lines = _wrap(text, f, x1 - x0 - 20)
+        visible = max((y1 - y0 - 6) // LINE_H, 1)
+        maxfirst = max(len(lines) - visible, 0)
+        first = self.p.scroll.get(key)
+        if first is None:
+            first = maxfirst if follow_end else 0
+        first = min(max(first, 0), maxfirst)
+        for i, line in enumerate(lines[first:first + visible]):
+            d.text((x0 + 6, y0 + 3 + i * LINE_H), line, font=f, fill=colors(line) if colors else TEXT)
+        bar = (x1 - 9, y0 + 2, x1 - 3, y1 - 2)
+        self.scrollbar(x1 - 9, y0 + 2, y1 - y0 - 4, len(lines), visible, first)
+        self.hots.append(Hot(x0, y0, x1, y1, ("scroll", key), total=len(lines), visible=visible, first=first,
+                             bar=bar))
 
 
 def _log_color(line: str):
@@ -152,9 +199,9 @@ def _log_color(line: str):
     return MUTED
 
 
-def render(p: PanelData) -> Image.Image:
-    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
+def render(p: PanelData) -> tuple[Image.Image, list[Hot]]:
+    pt = Painter(p)
+    d = pt.d
     d.rounded_rectangle((0, 0, W - 1, H - 1), 6, fill=BG, outline=(90, 80, 50, 255))
     d.rectangle((0, 6, 3, H - 7), fill=GOLD)
 
@@ -167,78 +214,143 @@ def render(p: PanelData) -> Image.Image:
         d.rounded_rectangle((x, 6, x + w, 28), 4, fill=(60, 55, 40, 255) if active else (30, 32, 40, 255),
                             outline=GOLD if active else EDGE)
         d.text((x + 9, 9), t, font=f, fill=GOLD if active else MUTED)
+        pt.hots.append(Hot(x, 6, x + w, 28, ("tab", t)))
         x += w + 4
     d.text((W - 66, 8), "F8", font=font(11, True), fill=MUTED)
-    d.rounded_rectangle((W - 40, 6, W - 12, 28), 4, fill=(30, 32, 40, 255), outline=EDGE)
+    d.rounded_rectangle((W - 40, 6, W - 12, 28), 4, fill=(60, 55, 40, 255) if p.menu_open else (30, 32, 40, 255),
+                        outline=GOLD if p.menu_open else EDGE)
     d.text((W - 31, 6), "\u2261", font=font(16, True), fill=TEXT)          # Menue (Einstellungen)
+    pt.hots.append(Hot(W - 40, 6, W - 12, 28, ("menu",)))
 
     top, bottom_y = 36, H - 36
     if p.tab == "Feldherr":
-        x = 12
-        x0 = x
-        x = _button(d, x, top, "\u25a0 Stoppen" if p.running else "    Starten", accent=True)
+        x = x0 = 12
+        x = pt.button(x, top, "\u25a0 Stoppen" if p.running else "    Starten", ("stop",) if p.running else ("start",),
+                      accent=True)
         if not p.running:      # Segoe UI hat kein Abspielsymbol: Dreieck selbst zeichnen
             d.polygon([(x0 + 8, top + 5), (x0 + 8, top + 15), (x0 + 16, top + 10)], fill=TEXT)
         for label, cmd in (("Aufstellung", "deploy"), ("Markierte \u2192 KI", "sel_ai"),
                            ("Markierte \u2192 Spieler", "sel_player")):
             hk = p.hotkeys.get(cmd, "")
-            x = _button(d, x, top, f"{label} {hk}".strip(), enabled=p.running)
+            x = pt.button(x, top, f"{label} {hk}".strip(), ("action", cmd), enabled=p.running)
         st = f"{p.status}  |  {p.model}, {p.effort}, {p.interval}  |  KI f\u00fchrt: {p.control}"
         d.text((12, top + 26), st, font=font(11), fill=GREEN if p.running else MUTED)
         log_top = top + 46
         if p.active_orders:
-            ao = _wrap(p.active_orders, font(11), W - 24)[:2]
+            ao = _wrap(p.active_orders, font(11), W - 130)[:2]
             for i, line in enumerate(ao):
                 d.text((12, log_top + i * 14), line, font=font(11), fill=BLUE)
-            log_top += 14 * len(ao) + 4
-        _textbox(d, (12, log_top, W - 12, bottom_y - 4), "\n".join(p.log[-200:]), bottom=True,
-                 colors=_log_color, f=font(11))
+            pt.button(W - 116, log_top - 2, "Befehle aufheben", ("clear_orders",), enabled=p.running)
+            log_top += max(14 * len(ao), 20) + 4
+        pt.textbox("log", (12, log_top, W - 12, bottom_y - 4), "\n".join(p.log[-300:]), follow_end=True,
+                   colors=_log_color, f=font(11))
     elif p.tab == "Befehle":
         mid = (top + bottom_y) // 2
-        _textbox(d, (12, top, W - 12, mid - 4), p.orders_player, title="Meine Armee (verbindlich)")
-        _textbox(d, (12, mid + 2, W - 12, bottom_y - 4), p.orders_enemy, title="Gegner (verbindlich)")
-        _button(d, W - 140, top - 2, "Pr\u00fcfen & verbessern")
-        _button(d, W - 140, mid, "Pr\u00fcfen & verbessern")
+        pt.textbox("orders_player", (12, top, W - 12, mid - 4), p.orders_player, title="Meine Armee (verbindlich)")
+        pt.textbox("orders_enemy", (12, mid + 2, W - 12, bottom_y - 4), p.orders_enemy, title="Gegner (verbindlich)")
+        pt.button(W - 140, top - 2, "Pr\u00fcfen & verbessern", ("review", "orders_player"))
+        pt.button(W - 140, mid, "Pr\u00fcfen & verbessern", ("review", "orders_enemy"))
     elif p.tab == "Strategie":
-        _textbox(d, (12, top, W - 12, bottom_y - 4), p.strategy, title=f"Vorlage: {p.strategy_name or '-'}")
-        _button(d, W - 140, top - 2, "Pr\u00fcfen & verbessern")
+        pt.textbox("strategy", (12, top, W - 12, bottom_y - 4), p.strategy, title=f"Vorlage: {p.strategy_name or '-'}")
+        pt.button(W - 140, top - 2, "Pr\u00fcfen & verbessern", ("review", "strategy"))
     elif p.tab == "Aufstellung":
-        _textbox(d, (12, top, W - 12, bottom_y - 30), p.deploy, title="Aufstellungsprompt")
-        x = _button(d, 12, bottom_y - 24, f"Aufstellung \u00fcbernehmen {p.hotkeys.get('deploy', '')}".strip(),
-                    enabled=p.running, accent=True)
-        _button(d, x, bottom_y - 24, "Pr\u00fcfen & verbessern")
+        pt.textbox("deploy", (12, top, W - 12, bottom_y - 30), p.deploy, title="Aufstellungsprompt")
+        x = pt.button(12, bottom_y - 24, f"Aufstellung \u00fcbernehmen {p.hotkeys.get('deploy', '')}".strip(),
+                      ("action", "deploy"), enabled=p.running, accent=True)
+        pt.button(x, bottom_y - 24, "Pr\u00fcfen & verbessern", ("review", "deploy"))
     elif p.tab == "Einheiten":
         x = 12
         for label, val in (("Meine Armee", "player"), ("Gegner", "enemy")):
-            x = _button(d, x, top, label, accent=p.units_side == val)
-        x = _button(d, x + 8, top, "Markierte \u2192 Spieler", enabled=p.running)
-        _button(d, x, top, "Markierte \u2192 KI", enabled=p.running)
+            x = pt.button(x, top, label, ("units_side", val), accent=p.units_side == val)
+        x = pt.button(x + 8, top, "Markierte \u2192 Spieler", ("give", "give_player"), enabled=p.running)
+        pt.button(x, top, "Markierte \u2192 KI", ("give", "give_ai"), enabled=p.running)
         d.text((12, top + 24), p.units_info, font=font(10), fill=MUTED)
         y0, y1 = top + 42, bottom_y - 4
         d.rectangle((12, y0, W - 12, y1), fill=PANEL, outline=EDGE)
         cols = [("Name", 14, 0), ("Mann", 160, 2), ("Lage", 230, 3), ("F\u00fchrung", 330, 4), ("Status", 470, 5)]
         for label, cx, _ in cols:
             d.text((cx + 6, y0 + 2), label, font=font(11, True), fill=GOLD)
-        lh = 16
-        visible = max((y1 - y0 - 22) // lh, 1)
-        for i, row in enumerate(p.units[:visible]):
-            yy = y0 + 20 + i * lh
+        visible = max((y1 - y0 - 22) // LINE_H, 1)
+        maxfirst = max(len(p.units) - visible, 0)
+        first = min(max(p.scroll.get("units") or 0, 0), maxfirst)
+        sel = set(p.selected)
+        for i, row in enumerate(p.units[first:first + visible]):
+            yy = y0 + 20 + i * LINE_H
+            bid = row[6] if len(row) > 6 else None
+            if bid in sel:
+                d.rectangle((13, yy - 1, W - 22, yy + LINE_H - 2), fill=SELECT)
             for _, cx, idx in cols:
                 val = str(row[idx]) if idx < len(row) else ""
                 col = BLUE if idx == 4 and val == "KI" else (ORANGE if idx == 5 and val else TEXT)
                 d.text((cx + 6, yy), val[:22], font=font(11), fill=col)
-        _scrollbar(d, W - 21, y0 + 20, y1 - y0 - 22, len(p.units), visible, 0)
+            if bid:
+                pt.hots.append(Hot(13, yy - 1, W - 22, yy + LINE_H - 2, ("unit", bid)))
+        bar = (W - 21, y0 + 20, W - 15, y1 - 2)
+        pt.scrollbar(W - 21, y0 + 20, y1 - y0 - 22, len(p.units), visible, first)
+        pt.hots.append(Hot(12, y0 + 20, W - 12, y1, ("scroll", "units"), total=len(p.units), visible=visible,
+                           first=first, bar=bar))
 
     # Chat-Zeile (immer sichtbar)
     cy = H - 30
     d.text((12, cy + 3), "Befehl an", font=font(11), fill=MUTED)
-    tx = _button(d, 68, cy, f"{p.chat_target}    ")
+    tx = pt.button(68, cy, f"{p.chat_target}    ", ("chat_target",))
     d.polygon([(tx - 20, cy + 8), (tx - 12, cy + 8), (tx - 16, cy + 13)], fill=TEXT)   # Pfeil der Auswahl
     d.rectangle((tx, cy, W - 86, cy + 20), fill=PANEL, outline=EDGE)
     ct = p.chat_text or "Befehl eingeben \u2026"
     d.text((tx + 6, cy + 3), ct[-60:], font=font(11), fill=TEXT if p.chat_text else MUTED)
-    _button(d, W - 80, cy, "Senden")
-    return img
+    pt.button(W - 80, cy, "Senden", ("send",), enabled=p.running and bool(p.chat_text.strip()))
+
+    if p.menu_open:
+        _menu(pt)
+    # Menue-Bereiche zuerst pruefen (liegen oben)
+    # Menue-Knoepfe vor der Menueflaeche (m_none), diese vor allem darunter
+    pt.hots.sort(key=lambda h: 1 if h.action == ("m_none",) else (0 if h.action[0].startswith("m_") else 2))
+    return pt.img, pt.hots
+
+
+def _menu(pt: Painter) -> None:
+    """Einstellungen (wie oben im Fenster): KI fuehrt, Modell, Denktiefe, Planabstand, Gruppenmanagement."""
+    p, d = pt.p, pt.d
+    x0, y0, x1, y1 = W - 330, 32, W - 10, 226
+    d.rounded_rectangle((x0, y0, x1, y1), 6, fill=(26, 28, 36, 250), outline=GOLD)
+    pt.hots.append(Hot(x0, y0, x1, y1, ("m_none",)))           # Klicks ins Menue nicht durchreichen
+    y = y0 + 8
+    d.text((x0 + 10, y + 3), "KI f\u00fchrt", font=font(11, True), fill=GOLD)
+    x = x0 + 90
+    for label, val in CONTROLS:
+        x = pt.button(x, y, label, ("m_control", val), accent=p.control_val == val)
+    y += 28
+    d.text((x0 + 10, y + 3), "Feldherr", font=font(11, True), fill=GOLD)
+    pt.button(x0 + 90, y, f"{p.model}  \u203a  n\u00e4chstes", ("m_model",))
+    y += 28
+    d.text((x0 + 10, y + 3), "Denktiefe", font=font(11, True), fill=GOLD)
+    x = x0 + 90
+    for e in EFFORTS:
+        x = pt.button(x, y, e, ("m_effort", e), accent=p.effort == e)
+    y += 28
+    d.text((x0 + 10, y + 3), "Plan alle", font=font(11, True), fill=GOLD)
+    x = pt.button(x0 + 90, y, "\u2212", ("m_plan", -1))
+    d.text((x + 2, y + 3), f"{p.plan_s} s", font=font(11), fill=TEXT)
+    x = pt.button(x + 36, y, "+", ("m_plan", 1))
+    d.text((x + 8, y + 3), "Nahkampf", font=font(11), fill=MUTED)
+    x = pt.button(x + 66, y, "\u2212", ("m_close", -1))
+    d.text((x + 2, y + 3), f"{p.close_s} s", font=font(11), fill=TEXT)
+    pt.button(x + 30, y, "+", ("m_close", 1))
+    y += 28
+    pt.button(x0 + 10, y, "Eigenes Gruppenmanagement: " + ("ein" if p.own_groups else "aus"), ("m_groups",),
+              accent=p.own_groups)
+    y += 28
+    d.text((x0 + 10, y + 2), "Modus gilt ab der n\u00e4chsten Schlacht", font=font(10), fill=MUTED)
+    pt.button(x1 - 70, y - 2, "Schlie\u00dfen", ("m_close_menu",))
+
+
+def scroll_to(hot: Hot, y: int) -> int:
+    """Klick/Ziehen am Scrollbalken -> erste sichtbare Zeile."""
+    if not hot.bar or hot.total <= hot.visible:
+        return 0
+    _, by0, _, by1 = hot.bar
+    frac = min(max((y - by0) / max(by1 - by0, 1), 0.0), 1.0)
+    return int(round(frac * (hot.total - hot.visible)))
 
 
 def write_panel(img: Image.Image | None, path: Path, seq: int, expanded: bool) -> None:
@@ -253,7 +365,6 @@ def write_panel(img: Image.Image | None, path: Path, seq: int, expanded: bool) -
             os.replace(tmp, path)
             return
         except PermissionError:          # DLL liest gerade
-            import time
             time.sleep(0.01)
 
 
@@ -269,3 +380,40 @@ def read_f8(path: Path) -> int | None:
             except ValueError:
                 return None
     return None
+
+
+class InputReader:
+    """Liest neue Zeilen aus overlay_input.txt (die DLL schreibt fort; wird die Datei kuerzer, neu ab Anfang)."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        try:
+            self.pos = path.stat().st_size          # alte Eingaben beim Start ignorieren
+        except OSError:
+            self.pos = 0
+
+    def read(self) -> list[tuple]:
+        try:
+            size = self.path.stat().st_size
+        except OSError:
+            return []
+        if size < self.pos:
+            self.pos = 0
+        if size == self.pos:
+            return []
+        with open(self.path, "rb") as f:
+            f.seek(self.pos)
+            data = f.read(size - self.pos)
+        end = data.rfind(b"\n")
+        if end < 0:
+            return []
+        self.pos += end + 1
+        out = []
+        for line in data[:end].decode("ascii", "ignore").splitlines():
+            parts = line.split()
+            if len(parts) >= 4 and parts[1] in ("down", "up", "drag", "wheel"):
+                try:
+                    out.append((parts[1], int(parts[2]), int(parts[3]), int(parts[4]) if len(parts) > 4 else 0))
+                except ValueError:
+                    pass
+        return out

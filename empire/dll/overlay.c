@@ -22,11 +22,18 @@
  * ai_bridge/overlay_panel.bin; die DLL zeigt dieses Bild statt der Meldungsleiste. F8-Druecke zaehlt die DLL
  * (nur wenn Empire im Vordergrund ist) und meldet sie in ai_bridge/overlay_keys.txt. Schreibt das Steuerpult
  * 5 s lang kein neues Bild (geschlossen/abgestuerzt), faellt die Anzeige auf die Meldungsleiste zurueck.
+ *
+ * Maus (Stufe B): Ist das Overlay aufgeklappt und der Zeiger darueber, meldet die DLL Klicks, Ziehen und Mausrad
+ * in Panel-Koordinaten nach ai_bridge/overlay_input.txt; das Steuerpult fuehrt die Aktion aus. Damit die Klicks
+ * nicht auch im Spiel landen, werden sie dort verschluckt: Fenstermeldungen (Fenster-Unterklasse) und DirectInput
+ * (GetDeviceState/GetDeviceData der Maus, per Hot-Patch umgeleitet - Empire liest die Maus ueber DirectInput).
  */
 #define WIN32_LEAN_AND_MEAN
 #define COBJMACROS
+#define DIRECTINPUT_VERSION 0x0800
 #include <windows.h>
 #include <d3d9.h>
+#include <dinput.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -177,6 +184,152 @@ static int panel_open(void)
 	return (g_panel_flags & 1) && g_panel_px && g_panel_w && GetTickCount() - g_panel_tick < 5000;
 }
 
+/* ---------- Maus ueber dem Overlay (Stufe B) ---------- */
+static HWND g_hwnd;                       /* Fenster des Spiels */
+static WNDPROC g_orig_wndproc;
+static float g_px0, g_py0, g_pw, g_ph;     /* Panel im Bildpuffer */
+static int g_bbw = 1, g_bbh = 1;           /* Groesse des Bildpuffers */
+static volatile LONG g_over;               /* Zeiger ueber dem Panel (oder Ziehen laeuft) */
+static int g_mx, g_my, g_lbtn, g_dragging;
+static LONG g_evt_n;
+static DWORD g_last_drag;
+/* Mausrad: Fenstermeldung, DirectInput-Zustand und -Puffer sehen dieselbe Drehung - je Quelle sammeln und je Bild
+ * nur die staerkste melden (sonst dreifach) */
+static LONG g_wheel_src[3];
+
+static void emit(const char *kind, int x, int y, int delta)
+{
+	FILE *f = fopen("ai_bridge\\overlay_input.txt", "a");
+	if (!f) return;
+	fprintf(f, "%ld %s %d %d %d\n", ++g_evt_n, kind, x, y, delta);
+	fclose(f);
+}
+
+/* Zeigerposition in Panel-Koordinaten; 1 = ueber dem Panel */
+static int cursor_in_panel(int *px, int *py)
+{
+	POINT pt;
+	RECT rc;
+	if (!g_hwnd || !GetCursorPos(&pt) || !ScreenToClient(g_hwnd, &pt) || !GetClientRect(g_hwnd, &rc)) return 0;
+	int cw = rc.right - rc.left, ch = rc.bottom - rc.top;
+	if (cw <= 0 || ch <= 0) return 0;
+	float bx = (float)pt.x * g_bbw / cw, by = (float)pt.y * g_bbh / ch;      /* Fenster -> Bildpuffer */
+	*px = (int)(bx - g_px0);
+	*py = (int)(by - g_py0);
+	return bx >= g_px0 && bx < g_px0 + g_pw && by >= g_py0 && by < g_py0 + g_ph;
+}
+
+/* einmal je Bild: Klicks/Ziehen erkennen und melden */
+static void poll_mouse(void)
+{
+	if (!panel_open() || !g_pw) { InterlockedExchange(&g_over, 0); g_dragging = 0; g_lbtn = 0; return; }
+	int x, y, inside = cursor_in_panel(&x, &y);
+	SHORT k = GetAsyncKeyState(VK_LBUTTON);
+	int down = (k & 0x8000) != 0;
+	if (down && !g_lbtn && inside) {
+		emit("down", x, y, 0);
+		g_dragging = 1;
+	} else if (!down && !g_lbtn && (k & 1) && inside) {      /* kurzer Klick zwischen zwei Bildern */
+		emit("down", x, y, 0);
+		emit("up", x, y, 0);
+	} else if (down && g_dragging && (x != g_mx || y != g_my) && GetTickCount() - g_last_drag > 40) {
+		emit("drag", x, y, 0);
+		g_last_drag = GetTickCount();
+	} else if (!down && g_lbtn && g_dragging) {
+		emit("up", x, y, 0);
+		g_dragging = 0;
+	}
+	g_lbtn = down;
+	g_mx = x;
+	g_my = y;
+	LONG wheel = 0;
+	for (int i = 0; i < 3; i++) {
+		LONG v = InterlockedExchange(&g_wheel_src[i], 0);
+		if (labs(v) > labs(wheel)) wheel = v;
+	}
+	if (wheel && inside) emit("wheel", x, y, wheel);
+	InterlockedExchange(&g_over, inside || g_dragging);
+}
+
+static LRESULT CALLBACK hk_wndproc(HWND h, UINT m, WPARAM w, LPARAM l)
+{
+	if (g_over) {
+		switch (m) {
+		case WM_MOUSEWHEEL:
+			InterlockedExchangeAdd(&g_wheel_src[0], GET_WHEEL_DELTA_WPARAM(w));
+			return 0;
+		case WM_LBUTTONDOWN: case WM_LBUTTONUP: case WM_LBUTTONDBLCLK:
+		case WM_RBUTTONDOWN: case WM_RBUTTONUP: case WM_RBUTTONDBLCLK:
+		case WM_MBUTTONDOWN: case WM_MBUTTONUP: case WM_MBUTTONDBLCLK:
+			return 0;                                     /* Klick gehoert dem Overlay */
+		}
+	}
+	return CallWindowProcW(g_orig_wndproc, h, m, w, l);
+}
+
+static void hook_window(IDirect3DDevice9 *dev, HWND present_wnd)
+{
+	if (g_hwnd) return;
+	HWND h = present_wnd;
+	if (!h) {
+		D3DDEVICE_CREATION_PARAMETERS cp;
+		if (SUCCEEDED(IDirect3DDevice9_GetCreationParameters(dev, &cp))) h = cp.hFocusWindow;
+	}
+	if (!h) return;
+	g_hwnd = h;
+	g_orig_wndproc = (WNDPROC)SetWindowLongPtrW(h, GWLP_WNDPROC, (LONG_PTR)hk_wndproc);
+	ov_log("Overlay: Spielfenster 0x%08lx fuer Mausklicks uebernommen (%s)", (DWORD)h, g_orig_wndproc ? "ok" : "fehlgeschlagen");
+}
+
+/* DirectInput: Maustasten und Rad verschlucken, solange der Zeiger ueber dem Overlay ist */
+typedef HRESULT (WINAPI *PFN_GetDeviceState)(IDirectInputDevice8W *, DWORD, LPVOID);
+typedef HRESULT (WINAPI *PFN_GetDeviceData)(IDirectInputDevice8W *, DWORD, LPDIDEVICEOBJECTDATA, LPDWORD, DWORD);
+static PFN_GetDeviceState g_orig_gds;
+static PFN_GetDeviceData g_orig_gdd;
+static struct { void *dev; int mouse; } g_devtype[16];
+static int g_ndevtype;
+
+static int is_mouse(IDirectInputDevice8W *d)
+{
+	for (int i = 0; i < g_ndevtype; i++) if (g_devtype[i].dev == d) return g_devtype[i].mouse;
+	DIDEVCAPS caps;
+	caps.dwSize = sizeof caps;
+	int mouse = SUCCEEDED(IDirectInputDevice8_GetCapabilities(d, &caps)) && (caps.dwDevType & 0xFF) == DI8DEVTYPE_MOUSE;
+	if (g_ndevtype < 16) { g_devtype[g_ndevtype].dev = d; g_devtype[g_ndevtype].mouse = mouse; g_ndevtype++; }
+	return mouse;
+}
+
+static HRESULT WINAPI hk_GetDeviceState(IDirectInputDevice8W *d, DWORD cb, LPVOID data)
+{
+	HRESULT hr = g_orig_gds(d, cb, data);
+	if (SUCCEEDED(hr) && g_over && data && (cb == sizeof(DIMOUSESTATE) || cb == sizeof(DIMOUSESTATE2))) {
+		DIMOUSESTATE *ms = (DIMOUSESTATE *)data;
+		if (ms->lZ) InterlockedExchangeAdd(&g_wheel_src[1], ms->lZ);
+		ms->lZ = 0;
+		memset((BYTE *)data + 12, 0, cb - 12);            /* alle Tasten los */
+	}
+	return hr;
+}
+
+static HRESULT WINAPI hk_GetDeviceData(IDirectInputDevice8W *d, DWORD cbo, LPDIDEVICEOBJECTDATA rg, LPDWORD n, DWORD fl)
+{
+	HRESULT hr = g_orig_gdd(d, cbo, rg, n, fl);
+	if (SUCCEEDED(hr) && g_over && rg && n && *n && !(fl & DIGDD_PEEK) && is_mouse(d)) {
+		DWORD keep = 0;
+		LONG wheel = 0;
+		for (DWORD i = 0; i < *n; i++) {
+			DIDEVICEOBJECTDATA *e = (DIDEVICEOBJECTDATA *)((BYTE *)rg + (size_t)i * cbo);
+			if (e->dwOfs == DIMOFS_Z) { wheel += (LONG)e->dwData; continue; }
+			if (e->dwOfs >= DIMOFS_BUTTON0 && e->dwOfs <= DIMOFS_BUTTON7) continue;
+			if (keep != i) memmove((BYTE *)rg + (size_t)keep * cbo, e, cbo);
+			keep++;
+		}
+		*n = keep;
+		if (wheel) InterlockedExchangeAdd(&g_wheel_src[2], wheel);
+	}
+	return hr;
+}
+
 /* aufgeklapptes Overlay: Bild des Steuerpults zeichnen (eigene Deckkraft im Bild) */
 static void draw_panel(IDirect3DDevice9 *dev)
 {
@@ -208,6 +361,8 @@ static void draw_panel(IDirect3DDevice9 *dev)
 	float w = (float)g_panel_w, h = (float)g_panel_h;
 	float x0 = (float)vp.X + 14.0f, y0 = (float)(vp.Y + vp.Height) - h - 180.0f;
 	if (y0 < (float)vp.Y + 10.0f) y0 = (float)vp.Y + 10.0f;
+	g_px0 = x0; g_py0 = y0; g_pw = w; g_ph = h;            /* fuer die Maus */
+	g_bbw = (int)vp.Width; g_bbh = (int)vp.Height;
 
 	IDirect3DStateBlock9_Capture(sb);
 	IDirect3DDevice9_SetPixelShader(dev, NULL);
@@ -325,6 +480,7 @@ static void draw(IDirect3DDevice9 *dev)
 {
 	poll_keys();
 	read_panel();
+	poll_mouse();
 	if (panel_open()) {             /* aufgeklappt: Bedienoberflaeche des Steuerpults */
 		draw_panel(dev);
 		if (InterlockedIncrement(&g_draws) == 1) ov_log("Overlay: erstes Bild gezeichnet (Steuerpult-Ansicht)");
@@ -454,6 +610,7 @@ static void draw_frame(IDirect3DDevice9 *dev)
 static HRESULT WINAPI hk_Present(IDirect3DDevice9 *dev, const RECT *a, const RECT *b, HWND w, const RGNDATA *r)
 {
 	if (!g_present_seen) { g_present_seen = 1; ov_log("Overlay: Present wird aufgerufen"); }
+	__try { hook_window(dev, w); } __except (EXCEPTION_EXECUTE_HANDLER) {}
 	read_config();
 	if (g_enabled) {
 		__try {
@@ -517,6 +674,36 @@ static void *hotpatch(BYTE *fn, void *hook, const char *name)
 
 static LRESULT CALLBACK dummy_wndproc(HWND h, UINT m, WPARAM w, LPARAM l) { return DefWindowProcW(h, m, w, l); }
 
+/* DirectInput8-Maus: GetDeviceState/GetDeviceData umleiten (Funktionen sind fuer alle Geraete dieselben) */
+typedef HRESULT (WINAPI *PFN_DirectInput8Create)(HINSTANCE, DWORD, REFIID, LPVOID *, LPUNKNOWN);
+static void hook_dinput(void)
+{
+	static const GUID iid_w = { 0xBF798031, 0x483A, 0x4DA2, { 0xAA, 0x99, 0x5D, 0x64, 0xED, 0x36, 0x97, 0x00 } };
+	static const GUID sysmouse = { 0x6F1D2B60, 0xD5A0, 0x11CF, { 0xBF, 0xC7, 0x44, 0x45, 0x53, 0x54, 0x00, 0x00 } };
+	__try {
+		HMODULE m = GetModuleHandleW(L"dinput8.dll");
+		if (!m) m = LoadLibraryW(L"dinput8.dll");
+		PFN_DirectInput8Create create = m ? (PFN_DirectInput8Create)GetProcAddress(m, "DirectInput8Create") : NULL;
+		if (!create) { ov_log("Overlay: dinput8.dll nicht gefunden - Klicks gehen auch ans Spiel"); return; }
+		IDirectInput8W *di = NULL;
+		if (FAILED(create(GetModuleHandleW(NULL), DIRECTINPUT_VERSION, &iid_w, (void **)&di, NULL)) || !di) {
+			ov_log("Overlay: DirectInput8Create fehlgeschlagen");
+			return;
+		}
+		IDirectInputDevice8W *dev = NULL;
+		if (SUCCEEDED(IDirectInput8_CreateDevice(di, &sysmouse, &dev, NULL)) && dev) {
+			void **vt = *(void ***)dev;
+			BYTE *gds = (BYTE *)vt[9], *gdd = (BYTE *)vt[10];
+			IDirectInputDevice8_Release(dev);
+			g_orig_gds = (PFN_GetDeviceState)hotpatch(gds, (void *)hk_GetDeviceState, "DI GetDeviceState");
+			g_orig_gdd = (PFN_GetDeviceData)hotpatch(gdd, (void *)hk_GetDeviceData, "DI GetDeviceData");
+		}
+		IDirectInput8_Release(di);
+	} __except (EXCEPTION_EXECUTE_HANDLER) {
+		ov_log("Overlay: Ausnahme 0x%08lx beim Umleiten von DirectInput", GetExceptionCode());
+	}
+}
+
 /* Einmal je Prozess aufrufen (aus luaopen_empire_bridge). */
 int overlay_install(void)
 {
@@ -568,6 +755,7 @@ int overlay_install(void)
 		ov_log("Overlay: Ausnahme 0x%08lx bei der Einrichtung - kein Overlay", GetExceptionCode());
 		return 0;
 	}
+	if (ok) hook_dinput();
 	ov_log(ok ? "Overlay eingerichtet" : "Overlay NICHT eingerichtet");
 	return ok;
 }
