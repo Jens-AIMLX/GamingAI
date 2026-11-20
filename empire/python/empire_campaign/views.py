@@ -26,9 +26,11 @@ def header(st: dict) -> str:
     stand = f"Stand {str(m.get('written', '?'))[11:]}"
     if reg and str(reg) != str(m.get("written")):
         stand += f", Regionen/Bauten {str(reg)[11:]}"
+    probs = len(_list(st.get("encode_errors"))) + len(_list(st.get("errors")))
+    warn = f" · DATENFEHLER in {probs} Teilen (ai_bridge/campaign_capture.error)" if probs else ""
     return (f"Zug {m.get('turn')} · {m.get('season')} {m.get('year')} · Kasse {_money(fin['treasury'])} · "
             f"Saldo/Jahr {_money(fin['net_year'])} · Rang M{fa.get('PowerRanking', '?')} "
-            f"P{fa.get('PrestigeRanking', '?')} R{fa.get('WealthRanking', '?')} · {stand}")
+            f"P{fa.get('PrestigeRanking', '?')} R{fa.get('WealthRanking', '?')} · {stand}{warn}")
 
 
 def _n(v) -> str:

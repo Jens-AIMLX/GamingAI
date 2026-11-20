@@ -7,7 +7,8 @@ Stand 2026-11-20. Quellen: Kampagnen-Probe im Spiel (`lua/campaign_addon.lua`, A
 ## Was das Kampagnen-Lua kann
 
 - Lua 5.1 mit `io`, `os`, `package.loadlib`, `debug` – Dateizugriff und Laden von `empire_bridge.dll` sind möglich
-  (wie in Schlachten).
+  (wie in Schlachten). **`math.huge` fehlt** (wie im Battle-Lua) – jeder Zugriff darauf bricht ab; Tests setzen
+  `math.huge = nil`.
 - `data/campaigns/<kampagne>/scripting.lua` liegt lose im Spielordner und wird geladen; `install.py` hängt dort die
   Probe an (Sicherung `scripting.lua.orig`).
 - `EpisodicScripting.AddEventCallBack(event, func)` **hängt an** – zusätzliche Handler ersetzen die des Spiels nicht.

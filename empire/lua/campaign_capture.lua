@@ -39,7 +39,8 @@ do
 		local t = type(v)
 		if t == "string" then out[#out + 1] = jstr(v)
 		elseif t == "number" then
-			if v ~= v or v == math.huge or v == -math.huge then out[#out + 1] = "null"
+			-- im Spiel-Lua fehlt math.huge (wie im Battle-Skript): NaN/unendlich ueber Grenzwerte erkennen
+			if v ~= v or v > 1e300 or v < -1e300 then out[#out + 1] = "null"
 			else out[#out + 1] = string.format("%.14g", v) end
 		elseif t == "boolean" then out[#out + 1] = v and "true" or "false"
 		elseif t == "table" then
