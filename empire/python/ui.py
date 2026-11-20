@@ -38,6 +38,7 @@ KEYRING_USER = "anthropic-api-key"
 sys.path.insert(0, str(HERE))
 from empire_bridge import EmpireBridge  # noqa: E402
 import overlay_panel  # noqa: E402
+from empire_campaign import report as campaign_report  # noqa: E402
 
 MODELS = {
     "Claude Opus 5.5 (stärkstes Modell)": ("claude", "claude-opus-5-5"),
@@ -357,6 +358,7 @@ class App(tk.Tk):
         self.nb.add(tab_strategy, text="  Strategie (Ratschläge)  ")
         self.nb.add(tab_deploy, text="  Aufstellung (F9)  ")
         self.nb.add(tab_units, text="  Einheiten  ")
+        self.nb.add(self._build_campaign_tab(), text="  Kampagne  ")
         ttk.Label(tab_deploy, text="Wird bei jedem „Aufstellung übernehmen“ neu gelesen.", foreground="#777").grid(
             row=2, column=0, sticky="w")
 
@@ -920,12 +922,80 @@ class App(tk.Tk):
         return self._ov_dir
 
     def _overlay_follow_tab(self) -> None:
-        """Tab-Wechsel im Fenster: das offene Overlay zeigt denselben Tab (Befehle/Strategie/Aufstellung/Einheiten)."""
+        """Tab-Wechsel im Fenster: das offene Overlay zeigt denselben Tab (Befehle/Strategie/Aufstellung/Einheiten;
+        den Kampagnen-Tab hat das Overlay noch nicht - dann bleibt es, wo es ist)."""
         if self._ov_view:
             try:
-                self._ov_view = self.nb.index(self.nb.select()) + 2
+                idx = self.nb.index(self.nb.select())
+                if idx + 2 <= len(overlay_panel.TABS):
+                    self._ov_view = idx + 2
             except tk.TclError:
                 pass
+
+    # ---------- Kampagne (Stufe 1: Bestandsbericht + Empfehlungen nach festen Regeln) ----------
+    def _build_campaign_tab(self) -> ttk.Frame:
+        tab = ttk.Frame(self.nb, padding=6)
+        tab.columnconfigure(0, weight=1)
+        bar = ttk.Frame(tab)
+        bar.grid(row=0, column=0, columnspan=2, sticky="ew")
+        self.camp_status = ttk.Label(bar, text="Noch kein Lagebericht - er entsteht zu Beginn jedes eigenen Zugs "
+                                               "auf der Kampagnenkarte.", foreground="#777")
+        self.camp_status.pack(side="left")
+        ttk.Button(bar, text="Neu laden", command=lambda: self._campaign_refresh(force=True)).pack(side="right")
+        self.camp_fog_var = tk.BooleanVar(value=bool(self.s.get("campaign_fog", False)))
+        ttk.Checkbutton(bar, text="Feinde im Nebel des Krieges einbeziehen (Spezialschalter)", variable=self.camp_fog_var,
+                        command=self._campaign_fog_changed).pack(side="right", padx=12)
+        self.camp_rec = tk.Text(tab, height=8, wrap="word", font=("Segoe UI", 9), background="#f6f6f6")
+        self.camp_rep = tk.Text(tab, height=8, wrap="word", font=("Consolas", 9), background="#f6f6f6")
+        for row, (txt, title) in enumerate(((self.camp_rec, "Handlungsempfehlungen"), (self.camp_rep, "Bestandsbericht"))):
+            ttk.Label(tab, text=title, font=("Segoe UI", 9, "bold")).grid(row=1 + 2 * row, column=0, sticky="w", pady=(6, 0))
+            txt.grid(row=2 + 2 * row, column=0, sticky="nsew")
+            sb = ttk.Scrollbar(tab, command=txt.yview)
+            sb.grid(row=2 + 2 * row, column=1, sticky="ns")
+            txt["yscrollcommand"] = sb.set
+            txt.config(state="disabled")
+        self._camp_mtime = None
+        return tab
+
+    def _campaign_fog_changed(self) -> None:
+        self.s["campaign_fog"] = bool(self.camp_fog_var.get())
+        self._schedule_save()
+        self._append("Kampagne: Feinde im Nebel des Krieges " + ("EINBEZOGEN" if self.camp_fog_var.get()
+                                                                   else "ausgeblendet (nur sichtbare)") + "\n")
+        self._campaign_refresh(force=True)
+
+    def _campaign_state_path(self) -> Path | None:
+        d = self._overlay_dir()
+        return d / "campaign_state.json" if d is not None else None
+
+    def _campaign_refresh(self, force: bool = False) -> None:
+        """Neuer Lagebericht vom Spiel (oder Schalter geaendert): Empfehlungen und Bestandsbericht neu aufbauen."""
+        path = self._campaign_state_path()
+        if path is None:
+            return
+        try:
+            mt = path.stat().st_mtime
+        except OSError:
+            return
+        if not force and mt == self._camp_mtime:
+            return
+        st = campaign_report.load_state(path)
+        if st is None:
+            return
+        self._camp_mtime = mt
+        fog = bool(self.camp_fog_var.get())
+        for widget, text in ((self.camp_rec, campaign_report.recommendations_text(st, fog)),
+                             (self.camp_rep, campaign_report.asset_report(st, fog))):
+            widget.config(state="normal")
+            widget.delete("1.0", "end")
+            widget.insert("1.0", text)
+            widget.config(state="disabled")
+        m = st.get("meta") or {}
+        n = len(campaign_report.recommendations(st, fog))
+        self.camp_status.config(text=f"Lagebericht Zug {m.get('turn')} ({m.get('season')} {m.get('year')}), "
+                                     f"erfasst {m.get('written')} - {n} Empfehlungen", foreground="#1a7f37")
+        if not force:
+            self._append(f"Kampagne: neuer Lagebericht Zug {m.get('turn')} - {n} Empfehlungen (Tab „Kampagne“)\n")
 
     def _overlay_data(self) -> "overlay_panel.PanelData":
         model = self.model_var.get().split(" (")[0].replace("Claude ", "")
@@ -1318,6 +1388,13 @@ class App(tk.Tk):
                 if not getattr(self, "_ov_err_shown", False):
                     self._ov_err_shown = True
                     self._append(f"Overlay: {e}\n")
+        if self._pump_n % 7 == 3:   # etwa jede Sekunde: neuer Kampagnen-Lagebericht vom Spiel?
+            try:
+                self._campaign_refresh()
+            except Exception as e:  # Bericht darf das Steuerpult nie stoeren
+                if not getattr(self, "_camp_err_shown", False):
+                    self._camp_err_shown = True
+                    self._append(f"Kampagne: Bericht fehlgeschlagen: {e}\n")
         if self._pump_n % 7 == 0:   # etwa jede Sekunde: Einheitenliste und aktive Befehle aktualisieren
             try:
                 self._refresh_units()

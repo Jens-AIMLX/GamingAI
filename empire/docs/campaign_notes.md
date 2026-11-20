@@ -89,9 +89,35 @@ Mit den richtigen Argumenten liefen alle Aufrufe (21:23).
 `UpperOrder`/`LowerOrder`. Die Zusammensetzung einer Armee (welche Einheiten) liefert die Liste nicht, nur die
 Anzahl; dafür gäbe es `RetrieveContainedEntitiesFromCharacter(character, target)` (Austauschfenster), ungeprüft.
 
+### Probe 4/5 (2026-11-20 21:58–22:10)
+
+| Aufruf | Ergebnis |
+|---|---|
+| `ReviewPanelInfo()` (Rekrutierungsfenster) | **Absturz** – braucht wohl das offene Fenster; Rekrutierungsschlange bisher ohne Quelle |
+| `FactionsUniversities(key)` | Universitäten: `Name`, `RegionKey`, `SlotKey`, `Level`, `Health`, `Address` |
+| `UniversityResearching(.Address)` | `Technology` (`Name`, `Key`, …), `TurnsToComplete` – leer, wenn nichts erforscht wird |
+| `BuildingBrowserDetails(nil)` / `(region)` | `region`, `region_name`, `slots` je Slot: `building_key` (`empty` = frei), `name`, `level`, `max_level`, `location`, `slot_type`, `type`, `region_key`, `slot_key`, `faction_key` |
+| `NextAutoSettlementSelection(region)` | nächste eigene Siedlung; Umlauf über alle: 103 Regionen, 952 Slots (70 frei) in 1,5 s, endet am Anfang |
+| `BuildingDetails(building, region, faction, slot)` | `Health` (Zustand 0–100) brauchbar; viele andere Felder außerhalb des Fensters Datenmüll |
+
+Bauschlange: kein Feld in den Slots gefunden (es war nichts im Bau?) – die Erfassung meldet unbekannte Slot-Felder.
+
+## Stufe 1: Datenerfassung und Bericht (umgesetzt)
+
+- `lua/campaign_capture.lua` (von `install.py` mit dem Addon eingehängt): zu Beginn jedes eigenen Zugs →
+  `ai_bridge/campaign_state.json`. Abschalter `ai_bridge/campaign_capture.off`; Absturzschutz je Schritt
+  (`campaign_capture.progress`/`.skip`). Ereignisse der Gegnerzüge (Schäden, Überfälle, Unruhen, Schlachten, Bau-/
+  Forschungsabschlüsse …) werden mitgezählt, eigene getrennt (`FactionIsLocal`, `CharacterIsLocalCampaign`,
+  `SettlementIsLocal`, `RegionIsLocal`).
+- `python/empire_campaign/report.py`: Bestandsbericht und Handlungsempfehlungen nach festen Regeln (Finanzen,
+  Ordnung mit Ursachen, Reparaturen, freie Bauplätze, Ausbau, leere Universitäten, Bedrohungen, Diplomatie,
+  Ereignisse).
+- **Nebel des Krieges:** erfasst werden alle Feindarmeen; Bericht und Regeln nennen/verwenden ohne den Spezialschalter
+  nur sichtbare (genähert: in eigener Region/Ortschaft oder näher als `VIS_RADIUS` an eigenen Armeen/Flotten/Agenten),
+  verborgene auch nicht als Anzahl. Schalter im Steuerpult, Tab „Kampagne“ (`campaign_fog` in den Einstellungen).
+
 ## Nächste Schritte
 
-1. Strategischer Berater: je eigenem Zug Lagebericht aus diesen Daten an Claude, Empfehlungen im Overlay und
-   Steuerpult (DLL im Kampagnen-Lua laden oder Datei-Brücke wie in Schlachten).
-2. Fehlende Daten (Feinde, Regionen) mit weiteren Aufrufen in Spiel-Signatur ergänzen.
+1. Spieltest der Erfassung; Laufzeit je Schritt prüfen (`steps` im JSON).
+2. Stufe 2: Claude-Berater auf Basis des Lageberichts; Overlay-Tab „Kampagne“ (DLL im Kampagnen-Lua laden).
 3. Erste Handlungen (Forschung, Bau, Rekrutierung, Steuern), einzeln und abschaltbar.

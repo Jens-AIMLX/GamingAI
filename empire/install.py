@@ -134,6 +134,8 @@ def install_campaign(game: Path) -> None:
     """Kampagnen-Probe (lua/campaign_addon.lua, nur lesen) an jedes data/campaigns/*/scripting.lua anhaengen -
     jeweils vom Original (.orig) aus, damit der Block nie doppelt drin steht."""
     addon = (HERE / "lua" / "campaign_addon.lua").read_text(encoding="utf-8")
+    capture = (HERE / "lua" / "campaign_capture.lua").read_text(encoding="utf-8")   # Datenerfassung je Zug
+    addon = addon.replace(END, capture.rstrip() + "\n" + END)
     for sc in campaign_scripts(game):
         orig = sc.with_name("scripting.lua.orig")
         if not orig.exists():
