@@ -193,7 +193,7 @@ do
 			try("RetrieveFactionAgentsList(pid)", C.RetrieveFactionAgentsList, pid)
 			try("FactionDetails(pid)", C.FactionDetails, pid)
 			try("FactionDetails(key)", C.FactionDetails, key)
-			try("RetrieveDiplomacyDetails(pid)", C.RetrieveDiplomacyDetails, pid)
+			local dip = try("RetrieveDiplomacyDetails(pid)", C.RetrieveDiplomacyDetails, pid)
 			try("RetrieveFactionListForDiplomacy()", C.RetrieveFactionListForDiplomacy)
 			try("TradeInfo()", C.TradeInfo)
 			try("PrestigeDetails()", C.PrestigeDetails)
@@ -207,8 +207,29 @@ do
 			end
 			try("HomeTheatre(pid)", C.HomeTheatre, pid)
 			try("TheatreList(true)", C.TheatreList, true)
+			local region
 			if type(regions) == "table" and type(regions[1]) == "table" and regions[1].SettlementAddress ~= nil then
-				try("SettlementsRegion(regions[1].SettlementAddress)", C.SettlementsRegion, regions[1].SettlementAddress)
+				region = try("SettlementsRegion(regions[1].SettlementAddress)", C.SettlementsRegion, regions[1].SettlementAddress)
+			end
+			-- Probe 3: Regionsdetails (wie region_details.luac), Staatskasse (government_screens.luac), Feindarmeen
+			if region ~= nil then
+				local details = try("InitialiseRegionInfoDetails(region)", C.InitialiseRegionInfoDetails, region)
+				if type(details) == "table" and type(details.Region) == "table" and details.Region.Region ~= nil then
+					try("RegionsPublicOrders(details.Region.Region)", C.RegionsPublicOrders, details.Region.Region)
+				end
+			end
+			try("InitialiseGovernmentDetails()", C.InitialiseGovernmentDetails)
+			local enemy
+			if type(dip) == "table" and type(dip.AtWar) == "table" then
+				for k, v in pairs(dip.AtWar) do
+					enemy = type(k) == "string" and k or (type(v) == "string" and v or nil)
+					if enemy then break end
+				end
+			end
+			if enemy then
+				outf:write("-- Feind fuer die naechsten Aufrufe: " .. enemy .. "\n")
+				try("FactionDetails(enemy)", C.FactionDetails, enemy)
+				try("RetrieveFactionMilitaryForceLists(enemy, true)", C.RetrieveFactionMilitaryForceLists, enemy, true)
 			end
 			outf:write("== Ende der Lese-Probe ==\n")
 			outf:close()
