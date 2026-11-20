@@ -1,0 +1,549 @@
+# CampaignUI: 249 Funktionen mit Aufrufen in 445 UI-Skripten
+AgentCardSelectionChanged  [1 Varianten]
+    CampaignUI.AgentCardSelectionChanged(...)   <- agents
+AgentEmbarkOrDisembark  [1 Varianten]
+    CampaignUI.AgentEmbarkOrDisembark(g_agent_cards[g_current_id].character.Address)   <- agents
+AgentGentlemanDuel  [1 Varianten]
+    CampaignUI.AgentGentlemanDuel(g_agent_cards[g_current_id].character.Address)   <- agents
+AgentRakeAssassinate  [1 Varianten]
+    CampaignUI.AgentRakeAssassinate(g_agent_cards[g_current_id].character.Address)   <- agents
+AgentRakeSubterfuge  [1 Varianten]
+    CampaignUI.AgentRakeSubterfuge(g_agent_cards[g_current_id].character.Address)   <- agents
+AttachMovieToComponent  [1 Varianten]
+    CampaignUI.AttachMovieToComponent(root:Find('event_pic'), details.Data.MoviePath)   <- event_message
+AttachRadarView  [1 Varianten]
+    CampaignUI.AttachRadarView(...)   <- campaign_radar
+AutoManage  [1 Varianten]
+    CampaignUI.AutoManage(g_results.pbni)   <- popup_battle_results
+BattleSetupShip  [1 Varianten]
+    CampaignUI.BattleSetupShip(details.Address)   <- unit_information
+BattleSetupShipFromRecord  [1 Varianten]
+    CampaignUI.BattleSetupShipFromRecord(details.Faction, details.Record)   <- unit_information
+BattleSetupUnit  [1 Varianten]
+    CampaignUI.BattleSetupUnit(details.Address)   <- unit_information
+BattleSetupUnitFromRecord  [1 Varianten]
+    CampaignUI.BattleSetupUnitFromRecord(details.Faction, details.Record)   <- unit_information
+BeginConstruction  [1 Varianten]
+    CampaignUI.BeginConstruction(this:GlobalExists('building_key'), this:GlobalExists('slot_key'))   <- template.buildingframe
+BeginResearch  [1 Varianten]
+    CampaignUI.BeginResearch(university.Address, key)   <- technology_researching
+BeginStealing  [1 Varianten]
+    CampaignUI.BeginStealing(gentleman.Address, key)   <- technology_stealing
+BeginUpgrade  [1 Varianten]
+    CampaignUI.BeginUpgrade(this:GlobalExists('building_key'), this:GlobalExists('slot_key'))   <- template.buildingframe
+BuildFort  [1 Varianten]
+    CampaignUI.BuildFort(g_general)   <- army
+BuildingBrowserDetails  [1 Varianten]
+    CampaignUI.BuildingBrowserDetails(g_region)   <- building_browser
+BuildingDetails  [2 Varianten]
+    CampaignUI.BuildingDetails(building_key, region_key, faction_key, slot_key)   <- layout.root
+    CampaignUI.BuildingDetails(this:GlobalExists('building_key'), this:GlobalExists('faction_key'), this:GlobalExists('region_key'), this:GlobalExists('slot_key'))   <- template.buildingframe
+BuildingEffects  [2 Varianten]
+    CampaignUI.BuildingEffects(building_key, faction_key, region_key, slot_key)   <- layout.root
+    CampaignUI.BuildingEffects(this:GlobalExists('building_key'), this:GlobalExists('faction_key'), this:GlobalExists('region_key'), this:GlobalExists('slot_key'), not true)   <- template.buildingframe
+BuildingRecordDetails  [1 Varianten]
+    CampaignUI.BuildingRecordDetails(building_key, region_key, faction_key, slot_key)   <- layout.root
+CameraPosition  [1 Varianten]
+    CampaignUI.CameraPosition()   <- labels
+CameraTarget  [1 Varianten]
+    CampaignUI.CameraTarget()   <- government_screens
+CanAgentEmbarkOrDisembark  [1 Varianten]
+    CampaignUI.CanAgentEmbarkOrDisembark(agent.character.Address)   <- agents
+CanArmyEmbarkOrDisembark  [1 Varianten]
+    CampaignUI.CanArmyEmbarkOrDisembark(g_general)   <- army
+CanDemolishBuilding  [2 Varianten]
+    CampaignUI.CanDemolishBuilding(UIComponent(g_building_slot_components[g_explicit_selection]):GlobalExists('slot_key'))   <- construction
+    CampaignUI.CanDemolishBuilding(...)   <- construction
+CanDemoteUnit  [2 Varianten]
+    CampaignUI.CanDemoteUnit(UIComponent(g_cardgroup:LuaCall('Selected')[i]):LuaCall('ItemAddress'))   <- army
+    CampaignUI.CanDemoteUnit(...)   <- army
+CanDisbandUnit  [2 Varianten]
+    CampaignUI.CanDisbandUnit(UIComponent(g_cardgroup:LuaCall('Selected')[i]):LuaCall('ItemAddress'))   <- army
+    CampaignUI.CanDisbandUnit(...)   <- army
+CanDisembark  [1 Varianten]
+    CampaignUI.CanDisembark(...)   <- army
+CanEmbark  [1 Varianten]
+    CampaignUI.CanEmbark(...)   <- army
+CanEndTurn  [1 Varianten]
+    CampaignUI.CanEndTurn()   <- layout.button_end_turn
+CanPromoteUnit  [1 Varianten]
+    CampaignUI.CanPromoteUnit(...)   <- army
+CanResearch  [1 Varianten]
+    CampaignUI.CanResearch(g_entities_clip:LuaCall('SelectedEntity').Address, tech_key)   <- technology_researching
+CanSackMinister  [1 Varianten]
+    CampaignUI.CanSackMinister()   <- government_screens
+CanSave  [1 Varianten]
+    CampaignUI.CanSave()   <- layout.root
+CanSteal  [2 Varianten]
+    CampaignUI.CanSteal(g_entities_clip:LuaCall('SelectedEntity').Address, tech_key)   <- technology_stealing
+    CampaignUI.CanSteal(g_entities_clip:LuaCall('SelectedEntity').Address, tech_entry.Key)   <- technology_stealing
+CanUnitsMerge  [1 Varianten]
+    CampaignUI.CanUnitsMerge(m_item_address, UIComponent(v.Address):LuaCall('ItemAddress'))   <- template.campaignunitcard
+CancelConstruction  [2 Varianten]
+    CampaignUI.CancelConstruction(building_key, slot_key)   <- template.buildingframe
+    CampaignUI.CancelConstruction(this:GlobalExists('building_key'), this:GlobalExists('slot_key'))   <- template.buildingframe
+CancelFortRepair  [1 Varianten]
+    CampaignUI.CancelFortRepair(g_fort_ptr)   <- template.buildingframe
+CancelOrderForSelectedCharacter  [1 Varianten]
+    CampaignUI.CancelOrderForSelectedCharacter()   <- layout.root
+CancelRecruitment  [1 Varianten]
+    CampaignUI.CancelRecruitment(g_item_address)   <- template.recruitmentcard
+CancelResearch  [1 Varianten]
+    CampaignUI.CancelResearch(university.Address)   <- technology_researching
+CancelSiegeEquipment  [1 Varianten]
+    CampaignUI.CancelSiegeEquipment(g_item_address)   <- template.siegeequipmentcard
+CancelStealing  [1 Varianten]
+    CampaignUI.CancelStealing(gentleman.Address)   <- technology_stealing
+CancelUpgradeFort  [1 Varianten]
+    CampaignUI.CancelUpgradeFort(g_fort_ptr)   <- template.buildingframe
+ChanceToSteal  [1 Varianten]
+    CampaignUI.ChanceToSteal(g_entities_clip:LuaCall('SelectedEntity').Address, tech_key)   <- technology_stealing
+ChangeIngameOptions  [1 Varianten]
+    CampaignUI.ChangeIngameOptions()   <- esc_menu_campaign.esc_menu_campaign
+CharacterInEnemyResidence  [1 Varianten]
+    CampaignUI.CharacterInEnemyResidence(agent.character.Address)   <- agents
+CharacterInValidEnemyUniversity  [1 Varianten]
+    CampaignUI.CharacterInValidEnemyUniversity(agent.character.Address)   <- agents
+CharacterResidence  [2 Varianten]
+    CampaignUI.CharacterResidence(agent.character.Address)   <- agents
+    CampaignUI.CharacterResidence(g_agent_cards[g_current_id].character.Address)   <- agents
+CharactersRelationshipToPlayersFaction  [1 Varianten]
+    CampaignUI.CharactersRelationshipToPlayersFaction(m_item_address)   <- template.campaigncharactercard
+ClosestSlotToCamera  [1 Varianten]
+    CampaignUI.ClosestSlotToCamera(g_slot_ptrs)   <- template.tech_entry_building
+ConstructBuildingTree  [1 Varianten]
+    CampaignUI.ConstructBuildingTree(...)   <- building_browser
+CurrentGameOptions  [1 Varianten]
+    CampaignUI.CurrentGameOptions()   <- options_game
+CurrentSeasonString  [1 Varianten]
+    CampaignUI.CurrentSeasonString()   <- scroll
+CurrentYear  [1 Varianten]
+    CampaignUI.CurrentYear()   <- scroll
+DebugViewLuaComponentPtr  [1 Varianten]
+    CampaignUI.DebugViewLuaComponentPtr(g_hud)   <- layout.root
+DeclineSidingWithAlly  [3 Varianten]
+    CampaignUI.DeclineSidingWithAlly()   <- event_message
+    CampaignUI.DeclineSidingWithAlly(details.Data.Defender.Key)   <- event_message
+    CampaignUI.DeclineSidingWithAlly(details.Data.Aggressor.Key)   <- event_message
+DemolishBuilding  [2 Varianten]
+    CampaignUI.DemolishBuilding(g_details.slot_key)   <- building_information
+    CampaignUI.DemolishBuilding(UIComponent(g_building_slot_components[g_explicit_selection]):GlobalExists('building_key'), UIComponent(g_building_slot_components[g_explicit_selection]):GlobalExists('slot   <- construction
+DemolishFort  [2 Varianten]
+    CampaignUI.DemolishFort(g_details.fort_ptr)   <- building_information
+    CampaignUI.DemolishFort(g_fort_ptr)   <- construction
+DemoteAdmiral  [1 Varianten]
+    CampaignUI.DemoteAdmiral(...)   <- army
+DisbandUnit  [1 Varianten]
+    CampaignUI.DisbandUnit(UIComponent(g_cardgroup:LuaCall('Selected')[i]):LuaCall('ItemAddress'))   <- army
+DismissCurrentAdvice  [1 Varianten]
+    CampaignUI.DismissCurrentAdvice()   <- advice_display
+DisplayingTurns  [1 Varianten]
+    CampaignUI.DisplayingTurns()   <- load-save_game.load-save_game
+EmbarkOrDisembark  [1 Varianten]
+    CampaignUI.EmbarkOrDisembark(...)   <- army
+EnableVoiceChat  [1 Varianten]
+    CampaignUI.EnableVoiceChat(not ended)   <- layout.root
+EndTurn  [1 Varianten]
+    CampaignUI.EndTurn()   <- layout.button_end_turn
+EnqueueSiegeEquipment  [1 Varianten]
+    CampaignUI.EnqueueSiegeEquipment(string.sub(this:Id(), 1, (string.find(this:Id(), '!') - 1)))   <- template.siegeequipmentcard
+EnterRevolutionaryRegion  [1 Varianten]
+    CampaignUI.EnterRevolutionaryRegion(data)   <- layout.root
+EntityTypeSelected  [1 Varianten]
+    CampaignUI.EntityTypeSelected()   <- layout.root
+ExecuteCaptives  [1 Varianten]
+    CampaignUI.ExecuteCaptives()   <- button_execute_captives
+ExitPreBattleContinuingSiege  [1 Varianten]
+    CampaignUI.ExitPreBattleContinuingSiege(g_pending_battle_details.attacking_character)   <- popup_pre_battle
+FactionDetails  [8 Varianten]
+    CampaignUI.FactionDetails(faction)   <- diplomacy_panel
+    CampaignUI.FactionDetails(opposing_faction)   <- diplomacy_panel
+    CampaignUI.FactionDetails(player_faction)   <- diplomacy_panel
+FactionsUniversities  [1 Varianten]
+    CampaignUI.FactionsUniversities(g_details.faction_key)   <- technology_researching
+FileExtenstionAndPathForWriteClass  [1 Varianten]
+    CampaignUI.FileExtenstionAndPathForWriteClass(game_save_functions.WriteClass)   <- load-save_game.load-save_game
+Finalise  [1 Varianten]
+    CampaignUI.Finalise(g_results.pbni)   <- popup_battle_results
+FinaliseDuel  [1 Varianten]
+    CampaignUI.FinaliseDuel(type)   <- duel challenge received
+FinaliseExchange  [2 Varianten]
+    CampaignUI.FinaliseExchange(lhs, rhs, exchange_cost)   <- unit_exchange
+    CampaignUI.FinaliseExchange()   <- unit_exchange
+FinaliseMoveTransition  [2 Varianten]
+    CampaignUI.FinaliseMoveTransition(current_details.Character, current_details.Units, current_details.PositionX, current_details.PositionY, current_details.Transitions[selected_theatre:GetProperty('Thea   <- travel_destinations
+    CampaignUI.FinaliseMoveTransition(current_details.Character, current_details.Units, current_details.PositionX, current_details.PositionY)   <- travel_destinations
+FinalisePendingAction  [1 Varianten]
+    CampaignUI.FinalisePendingAction()   <- diplomacy_panel
+FinalisePendingDuel  [1 Varianten]
+    CampaignUI.FinalisePendingDuel()   <- event_movie_panel
+FormatString  [2 Varianten]
+    CampaignUI.FormatString(CampaignUI.UILocalisationString('option2_text_normal_Text_260075'), name)   <- event_message
+    CampaignUI.FormatString(CampaignUI.UILocalisationString('option2_text_normal_Text_260075'), details.Data.Defender.Name)   <- event_message
+FortDetails  [2 Varianten]
+    CampaignUI.FortDetails(fort_ptr, building_key)   <- layout.root
+    CampaignUI.FortDetails(g_fort_ptr, this:GlobalExists('building_key'))   <- template.buildingframe
+FortEffects  [2 Varianten]
+    CampaignUI.FortEffects(fort_ptr, building_key)   <- layout.root
+    CampaignUI.FortEffects(g_fort_ptr, this:GlobalExists('building_key'))   <- template.buildingframe
+GentlemanStealing  [1 Varianten]
+    CampaignUI.GentlemanStealing(g_entities_clip:LuaCall('SelectedEntity').Address)   <- technology_stealing
+GovernorshipList  [1 Varianten]
+    CampaignUI.GovernorshipList(CampaignUI.PlayerFactionId())   <- event_message
+HideBattleDetails  [1 Varianten]
+    CampaignUI.HideBattleDetails()   <- button_hide_battle_details
+HoldElections  [1 Varianten]
+    CampaignUI.HoldElections()   <- government_screens
+HomeTheatre  [2 Varianten]
+    CampaignUI.HomeTheatre(...)   <- diplomacy_panel
+    CampaignUI.HomeTheatre(CampaignUI.PlayerFactionId())   <- event_message
+ImprisonCaptives  [1 Varianten]
+    CampaignUI.ImprisonCaptives()   <- button_imprison_captives
+InformAdviceReachedRender  [1 Varianten]
+    CampaignUI.InformAdviceReachedRender(true)   <- advice_display
+InitialiseCharacterDetails  [1 Varianten]
+    CampaignUI.InitialiseCharacterDetails(character_ptr)   <- layout.root
+InitialiseGovernmentDetails  [1 Varianten]
+    CampaignUI.InitialiseGovernmentDetails()   <- government_screens
+InitialiseRecruitableUnitDetails  [1 Varianten]
+    CampaignUI.InitialiseRecruitableUnitDetails(record_key, faction_key, cost, experience)   <- layout.root
+InitialiseRegionInfoDetails  [2 Varianten]
+    CampaignUI.InitialiseRegionInfoDetails(addr)   <- layout.root
+    CampaignUI.InitialiseRegionInfoDetails(current_region)   <- region_details
+InitialiseTechDetails  [1 Varianten]
+    CampaignUI.InitialiseTechDetails(tech_key, region_key, faction_key, slot_key)   <- layout.root
+InitialiseUnitDetails  [2 Varianten]
+    CampaignUI.InitialiseUnitDetails(unit_ptr)   <- layout.root
+    CampaignUI.InitialiseUnitDetails(id, region_key, faction_key, slot_key)   <- layout.root
+InstigateAssassination  [1 Varianten]
+    CampaignUI.InstigateAssassination(m_attacker, target)   <- agent_action
+InstigateDuel  [1 Varianten]
+    CampaignUI.InstigateDuel(m_attacker, target)   <- agent_action
+InstigateSabotage  [1 Varianten]
+    CampaignUI.InstigateSabotage(m_attacker, target)   <- agent_action
+InviteAlliesIntoWar  [1 Varianten]
+    CampaignUI.InviteAlliesIntoWar(call_allies)   <- diplomacy_panel
+IsCharacterInPortResidence  [1 Varianten]
+    CampaignUI.IsCharacterInPortResidence(agent.character.Address)   <- agents
+IsCharacterPlayerControlled  [1 Varianten]
+    CampaignUI.IsCharacterPlayerControlled(characters[i].Address)   <- agents
+IsMergingUnit  [1 Varianten]
+    CampaignUI.IsMergingUnit(m_item_address)   <- template.campaignunitcard
+IsMultiplayer  [1 Varianten]
+    CampaignUI.IsMultiplayer()   <- esc_menu_campaign.esc_menu_campaign
+IsPlayersTurn  [1 Varianten]
+    CampaignUI.IsPlayersTurn()   <- agents
+IsTimedMultiplayer  [1 Varianten]
+    CampaignUI.IsTimedMultiplayer()   <- event_message
+IsTimedMultiplayerGame  [1 Varianten]
+    CampaignUI.IsTimedMultiplayerGame()   <- diplomacy_panel
+IsUnitMergePossible  [1 Varianten]
+    CampaignUI.IsUnitMergePossible()   <- army
+KickMinister  [1 Varianten]
+    CampaignUI.KickMinister(...)   <- government_screens
+LoadCampaign  [1 Varianten]
+    CampaignUI.LoadCampaign(name_input:LuaCall('Value'))   <- load-save_game.load-save_game
+LocalisationString  [94 Varianten]
+    CampaignUI.LocalisationString('replenish_no_selection')   <- army
+    CampaignUI.LocalisationString('replenish_not_required')   <- army
+    CampaignUI.LocalisationString('replenish_some_unable')   <- army
+MergeUnits  [1 Varianten]
+    CampaignUI.MergeUnits({})   <- army
+MergeUnitsWithFirst  [1 Varianten]
+    CampaignUI.MergeUnitsWithFirst(...)   <- template.campaignunitcard
+MinisterPortraitPath  [1 Varianten]
+    CampaignUI.MinisterPortraitPath(opposing_faction)   <- diplomacy_panel
+MissionsDetails  [1 Varianten]
+    CampaignUI.MissionsDetails()   <- missions
+MonarchyInfo  [1 Varianten]
+    CampaignUI.MonarchyInfo()   <- government_screens
+MoveIntoTarget  [2 Varianten]
+    CampaignUI.MoveIntoTarget(m_src, m_target)   <- agent_options
+    CampaignUI.MoveIntoTarget(m_src, m_target, true)   <- agent_options
+MovieDismissed  [1 Varianten]
+    CampaignUI.MovieDismissed()   <- event_movie_panel
+MultiplayerBaseInterface  [1 Varianten]
+    CampaignUI.MultiplayerBaseInterface()   <- layout.root
+MultiplayerBattleSelectionComplete  [1 Varianten]
+    CampaignUI.MultiplayerBattleSelectionComplete(selection_type)   <- popup_pre_battle
+MultiplayerOtherPlayersName  [1 Varianten]
+    CampaignUI.MultiplayerOtherPlayersName()   <- popup_pre_battle
+MultiplayerPlayerOutOfTurn  [1 Varianten]
+    CampaignUI.MultiplayerPlayerOutOfTurn()   <- layout.root
+MultiplayerPlayersName  [1 Varianten]
+    CampaignUI.MultiplayerPlayersName()   <- layout.root
+MultiplayerPostBattleDismissed  [1 Varianten]
+    CampaignUI.MultiplayerPostBattleDismissed()   <- popup_battle_results
+MultiplayerSaveConfirm  [1 Varianten]
+    CampaignUI.MultiplayerSaveConfirm()   <- layout.root
+MultiplayerTimeIsUp  [1 Varianten]
+    CampaignUI.MultiplayerTimeIsUp()   <- layout.root
+MultiplayerTurnTimer  [1 Varianten]
+    CampaignUI.MultiplayerTurnTimer()   <- layout.button_end_turn
+MultiplayerTurnTimespan  [1 Varianten]
+    CampaignUI.MultiplayerTurnTimespan()   <- layout.root
+MultiplayerUnlimitedTurnBeginConfirm  [1 Varianten]
+    CampaignUI.MultiplayerUnlimitedTurnBeginConfirm()   <- layout.root
+NavalUnitLimit  [1 Varianten]
+    CampaignUI.NavalUnitLimit()   <- exchange_group
+NextAutoEntitySelection  [1 Varianten]
+    CampaignUI.NextAutoEntitySelection()   <- layout.root
+NextAutoSettlementSelection  [1 Varianten]
+    CampaignUI.NextAutoSettlementSelection(g_region)   <- building_browser
+OptimizeShip  [1 Varianten]
+    CampaignUI.OptimizeShip(...)   <- popup_battle_results
+PauseCampaign  [2 Varianten]
+    CampaignUI.PauseCampaign(true)   <- esc_menu_campaign.esc_menu_campaign
+    CampaignUI.PauseCampaign(false)   <- esc_menu_campaign.esc_menu_campaign
+PlayerChoosesRevolutionSide  [2 Varianten]
+    CampaignUI.PlayerChoosesRevolutionSide(false, revolution_region_pointer)   <- layout_revolution
+    CampaignUI.PlayerChoosesRevolutionSide(true, revolution_region_pointer)   <- layout_revolution
+PlayerFactionId  [1 Varianten]
+    CampaignUI.PlayerFactionId()   <- diplomacy_panel
+PlayerFactionIsTribal  [1 Varianten]
+    CampaignUI.PlayerFactionIsTribal()   <- entity_lists
+PlayerHasFunds  [1 Varianten]
+    CampaignUI.PlayerHasFunds((0 + g_units[u].RepairCost))   <- army
+PlayerIgnoresBankruptcy  [2 Varianten]
+    CampaignUI.PlayerIgnoresBankruptcy(true)   <- layout.root
+    CampaignUI.PlayerIgnoresBankruptcy(false)   <- layout.root
+PlayerInControl  [1 Varianten]
+    CampaignUI.PlayerInControl()   <- advice_interface
+PlayerOwnedUnit  [1 Varianten]
+    CampaignUI.PlayerOwnedUnit(g_details.Address)   <- unit_information
+PlayerPlayingAsRevolutionaries  [1 Varianten]
+    CampaignUI.PlayerPlayingAsRevolutionaries()   <- region_details
+PlayerUnitTypeCount  [1 Varianten]
+    CampaignUI.PlayerUnitTypeCount(g_unit_record.Key)   <- template.campaignunitcard
+PlayersCulture  [1 Varianten]
+    CampaignUI.PlayersCulture()   <- event_message
+PlayersFactionKey  [1 Varianten]
+    CampaignUI.PlayersFactionKey()   <- government_screens
+PostNavalBattleRefresh  [1 Varianten]
+    CampaignUI.PostNavalBattleRefresh(g_results.pbni)   <- popup_battle_results
+PostNavalBattleSetupValid  [1 Varianten]
+    CampaignUI.PostNavalBattleSetupValid(parent:LuaCall('PostBattleNavalInterface'))   <- button_close_naval
+PreBattleAttack  [2 Varianten]
+    CampaignUI.PreBattleAttack()   <- popup_pre_battle
+    CampaignUI.PreBattleAttack(g_pending_battle_details.attacking_character, g_pending_battle_details.garrisoned_residence)   <- popup_pre_battle
+PreBattleAutoResolve  [2 Varianten]
+    CampaignUI.PreBattleAutoResolve()   <- popup_pre_battle
+    CampaignUI.PreBattleAutoResolve(g_pending_battle_details.attacking_character, g_pending_battle_details.garrisoned_residence)   <- popup_pre_battle
+PreBattleDemandSurrender  [1 Varianten]
+    CampaignUI.PreBattleDemandSurrender(g_pending_battle_details.garrisoned_residence)   <- popup_pre_battle
+PreBattlePlayerSurrenderDecision  [2 Varianten]
+    CampaignUI.PreBattlePlayerSurrenderDecision(true)   <- layout.root
+    CampaignUI.PreBattlePlayerSurrenderDecision(false)   <- layout.root
+PreBattleRetreat  [1 Varianten]
+    CampaignUI.PreBattleRetreat(g_player_character)   <- popup_pre_battle
+PrestigeDetails  [1 Varianten]
+    CampaignUI.PrestigeDetails()   <- objectives_screens
+PreviousAutoEntitySelection  [1 Varianten]
+    CampaignUI.PreviousAutoEntitySelection()   <- layout.root
+PreviousAutoSettlementSelection  [1 Varianten]
+    CampaignUI.PreviousAutoSettlementSelection(g_region)   <- building_browser
+PromoteUnits  [1 Varianten]
+    CampaignUI.PromoteUnits({})   <- army
+QuickLoad  [1 Varianten]
+    CampaignUI.QuickLoad()   <- layout.root
+QuickSave  [1 Varianten]
+    CampaignUI.QuickSave()   <- layout.root
+QuitToMainScreen  [1 Varianten]
+    CampaignUI.QuitToMainScreen()   <- campaign_result
+QuitToWindowsFromEscapeMenu  [1 Varianten]
+    CampaignUI.QuitToWindowsFromEscapeMenu()   <- esc_menu_campaign.esc_menu_campaign
+RecruitUnit  [1 Varianten]
+    CampaignUI.RecruitUnit(g_character, g_manager, g_record)   <- template.recruitmentcard
+RegimentName  [1 Varianten]
+    CampaignUI.RegimentName(g_unit_address)   <- template.campaignunitcard
+RegionFromSelection  [1 Varianten]
+    CampaignUI.RegionFromSelection()   <- button_selector
+RegionKeyFromSlot  [1 Varianten]
+    CampaignUI.RegionKeyFromSlot(g_closest_slot)   <- template.tech_entry_building
+RegionsGovernorship  [1 Varianten]
+    CampaignUI.RegionsGovernorship(UIComponent(panel_manager.IsPanelOpen('region_info')):LuaCall('RegionShown'))   <- layout.root
+RegionsOwnedByFactionOrByProtectorates  [1 Varianten]
+    CampaignUI.RegionsOwnedByFactionOrByProtectorates(faction)   <- objectives_screens
+RegionsPublicOrders  [1 Varianten]
+    CampaignUI.RegionsPublicOrders(details.Region.Region)   <- template.city_info_bar
+RemainingTimeToDrop  [1 Varianten]
+    CampaignUI.RemainingTimeToDrop()   <- layout.root
+RepairBuilding  [1 Varianten]
+    CampaignUI.RepairBuilding(UIComponent(g_building_slot_components[g_explicit_selection]):GlobalExists('building_key'), UIComponent(g_building_slot_components[g_explicit_selection]):GlobalExists('slot_k   <- construction
+RepairFort  [1 Varianten]
+    CampaignUI.RepairFort(g_fort_ptr)   <- construction
+RequestAssassinationTargets  [1 Varianten]
+    CampaignUI.RequestAssassinationTargets(m_src, m_target)   <- agent_options
+RequestDuelTargets  [1 Varianten]
+    CampaignUI.RequestDuelTargets(m_src, m_target)   <- agent_options
+RequestSabotageTargets  [1 Varianten]
+    CampaignUI.RequestSabotageTargets(m_src, m_target)   <- agent_options
+RetrieveContainedEntitiesFromCharacter  [1 Varianten]
+    CampaignUI.RetrieveContainedEntitiesFromCharacter(character, target)   <- exchange_panel
+RetrieveContainedEntitiesFromGarrison  [1 Varianten]
+    CampaignUI.RetrieveContainedEntitiesFromGarrison(garrison, target)   <- exchange_panel
+RetrieveDiplomacyDetails  [3 Varianten]
+    CampaignUI.RetrieveDiplomacyDetails(faction)   <- diplomacy_panel
+    CampaignUI.RetrieveDiplomacyDetails(player_faction)   <- diplomacy_panel
+    CampaignUI.RetrieveDiplomacyDetails(opposing_faction)   <- diplomacy_panel
+RetrieveDiplomaticOpinions  [1 Varianten]
+    CampaignUI.RetrieveDiplomaticOpinions(player_faction, opposing_faction)   <- diplomacy_panel
+RetrieveDiplomaticStanceString  [1 Varianten]
+    CampaignUI.RetrieveDiplomaticStanceString(CampaignUI.PlayerFactionId(), details.Faction.Key)   <- template.character_duel_info_pane
+RetrieveExistingTreaties  [1 Varianten]
+    CampaignUI.RetrieveExistingTreaties(player_faction, opposing_faction)   <- diplomacy_panel
+RetrieveFactionAgentsList  [1 Varianten]
+    CampaignUI.RetrieveFactionAgentsList(...)   <- entity_lists
+RetrieveFactionListForDiplomacy  [1 Varianten]
+    CampaignUI.RetrieveFactionListForDiplomacy()   <- scroll
+RetrieveFactionMilitaryForceLists  [2 Varianten]
+    CampaignUI.RetrieveFactionMilitaryForceLists(CampaignUI.PlayerFactionId(), true)   <- entity_lists
+    CampaignUI.RetrieveFactionMilitaryForceLists(CampaignUI.PlayerFactionId(), false)   <- entity_lists
+RetrieveFactionRegionList  [1 Varianten]
+    CampaignUI.RetrieveFactionRegionList(...)   <- entity_lists
+RetrieveGameCore  [1 Varianten]
+    CampaignUI.RetrieveGameCore()   <- layout.root
+RetrieveGovernorshipDetails  [2 Varianten]
+    CampaignUI.RetrieveGovernorshipDetails(gship)   <- government_screens
+    CampaignUI.RetrieveGovernorshipDetails(CampaignUI.GovernorshipList(CampaignUI.PlayerFactionId())[i].Key)   <- government_screens
+RetrieveRemainingMilitaryAccessTurns  [1 Varianten]
+    CampaignUI.RetrieveRemainingMilitaryAccessTurns(player_faction, opposing_faction)   <- diplomacy_panel
+RetrieveVisibleEnitityDetails  [1 Varianten]
+    CampaignUI.RetrieveVisibleEnitityDetails()   <- labels
+RevertShipToPrize  [1 Varianten]
+    CampaignUI.RevertShipToPrize(...)   <- popup_battle_results
+ReviewPanelInfo  [1 Varianten]
+    CampaignUI.ReviewPanelInfo()   <- army
+ReviewPanelTabSelectionSet_1_Indexed  [1 Varianten]
+    CampaignUI.ReviewPanelTabSelectionSet_1_Indexed(tab_id)   <- layout.root
+SabotageArmy  [1 Varianten]
+    CampaignUI.SabotageArmy(m_src, m_target)   <- agent_options
+ScreenSize  [1 Varianten]
+    CampaignUI.ScreenSize()   <- popup_battle_results
+ScupperToggleShip  [1 Varianten]
+    CampaignUI.ScupperToggleShip(...)   <- popup_battle_results
+SelectAndZoomToCharacter  [2 Varianten]
+    CampaignUI.SelectAndZoomToCharacter(item:LuaCall('Character'), utils.CAMERA_TARGET_POS_LEFT)   <- entity_lists
+    CampaignUI.SelectAndZoomToCharacter(g_entities_clip:LuaCall('SelectedEntity').Address, -1)   <- technology_stealing
+SelectAndZoomToRegion  [4 Varianten]
+    CampaignUI.SelectAndZoomToRegion(item:LuaCall('Region'), utils.CAMERA_TARGET_POS_LEFT)   <- entity_lists
+    CampaignUI.SelectAndZoomToRegion(region.Address, utilities.CAMERA_TARGET_POS_LEFT)   <- government_screens
+    CampaignUI.SelectAndZoomToRegion(lowest_public_order, utilities.CAMERA_TARGET_POS_RIGHT)   <- government_screens
+SelectAndZoomToSlot  [4 Varianten]
+    CampaignUI.SelectAndZoomToSlot(g_selected_entry_region, g_selected_entry_slot, -1)   <- building_browser
+    CampaignUI.SelectAndZoomToSlot(g_entities_clip:LuaCall('SelectedEntity').RegionKey, g_entities_clip:LuaCall('SelectedEntity').SlotKey, -1)   <- technology_researching
+    CampaignUI.SelectAndZoomToSlot(g_region_key, g_slot_key, -1)   <- template.building_browser_node
+SetAutomanageConstruction  [1 Varianten]
+    CampaignUI.SetAutomanageConstruction(selected_governorship, on)   <- government_screens
+SetAutomanageTaxes  [1 Varianten]
+    CampaignUI.SetAutomanageTaxes(selected_governorship, on)   <- government_screens
+SetCameraTarget  [9 Varianten]
+    CampaignUI.SetCameraTarget(m_attacker.PosX, m_attacker.PosY, -1)   <- agent_action
+    CampaignUI.SetCameraTarget(m_attacker.PosX, m_attacker.PosY)   <- challenge_to_duel
+    CampaignUI.SetCameraTarget(pos.x, pos.y, -1)   <- duel challenge received
+SetGovernorshipTaxRate  [2 Varianten]
+    CampaignUI.SetGovernorshipTaxRate(selected_governorship, false, rate)   <- government_screens
+    CampaignUI.SetGovernorshipTaxRate(selected_governorship, true, rate)   <- government_screens
+SetMyUnitName  [1 Varianten]
+    CampaignUI.SetMyUnitName(g_details.Address, name)   <- unit_information
+SetRegionTaxed  [2 Varianten]
+    CampaignUI.SetRegionTaxed(current_region, false)   <- region_details
+    CampaignUI.SetRegionTaxed(current_region, true)   <- region_details
+SetReinforcementsOrder  [1 Varianten]
+    CampaignUI.SetReinforcementsOrder(g_left_tabs_window:LuaCall('ReinforcementDetails'), g_player_character)   <- popup_pre_battle
+SetSuccessor  [1 Varianten]
+    CampaignUI.SetSuccessor(...)   <- royal_family
+SettlementsRegion  [1 Varianten]
+    CampaignUI.SettlementsRegion(CampaignUI.EntityTypeSelected().Entity)   <- layout.root
+ShouldShowLabelBottomRow  [1 Varianten]
+    CampaignUI.ShouldShowLabelBottomRow()   <- labels
+ShowBuildingInfoOnDblClick  [1 Varianten]
+    CampaignUI.ShowBuildingInfoOnDblClick(CampaignUI.EntityTypeSelected().Entity)   <- layout.root
+ShowExchangeScreenForDockedNavy  [1 Varianten]
+    CampaignUI.ShowExchangeScreenForDockedNavy(g_general)   <- army
+SideWithAlly  [2 Varianten]
+    CampaignUI.SideWithAlly(details.Data.Aggressor.Key)   <- event_message
+    CampaignUI.SideWithAlly(details.Data.Defender.Key)   <- event_message
+SlotKeyFromAddress  [1 Varianten]
+    CampaignUI.SlotKeyFromAddress(g_closest_slot)   <- template.tech_entry_building
+SplitFromForce  [1 Varianten]
+    CampaignUI.SplitFromForce({}, {}, {})   <- layout.root
+StateGiftValues  [1 Varianten]
+    CampaignUI.StateGiftValues()   <- diplomacy_panel
+StopMovieInComponent  [1 Varianten]
+    CampaignUI.StopMovieInComponent(...)   <- event_message
+SwapMinisters  [1 Varianten]
+    CampaignUI.SwapMinisters(...)   <- government_screens
+TakePrizeShip  [1 Varianten]
+    CampaignUI.TakePrizeShip(...)   <- popup_battle_results
+TechEffects  [2 Varianten]
+    CampaignUI.TechEffects(tech_key, region_key, faction_key, slot_key)   <- layout.root
+    CampaignUI.TechEffects(details.Key, details.region_key, CampaignUI.PlayersFactionKey(), details.slot_key)   <- template.tech_tooltip2
+TechnologyPlayerDetails  [1 Varianten]
+    CampaignUI.TechnologyPlayerDetails(residence)   <- layout.root
+TechnologyResearchingDetails  [1 Varianten]
+    CampaignUI.TechnologyResearchingDetails(character, residence)   <- layout.root
+TechnologyStealingDetails  [1 Varianten]
+    CampaignUI.TechnologyStealingDetails(character, residence)   <- layout.root
+TheatreList  [1 Varianten]
+    CampaignUI.TheatreList(true)   <- scroll
+TheatreMapDimensions  [2 Varianten]
+    CampaignUI.TheatreMapDimensions(theatre)   <- campaign_radar
+    CampaignUI.TheatreMapDimensions(parent:LuaCall('CurrentTheatre'))   <- campaign_radar
+Time  [1 Varianten]
+    CampaignUI.Time()   <- building_browser
+TimeSinceTick  [1 Varianten]
+    CampaignUI.TimeSinceTick()   <- layout.root
+ToggleFlagDisplay  [1 Varianten]
+    CampaignUI.ToggleFlagDisplay()   <- layout.root
+ToggleLabels  [1 Varianten]
+    CampaignUI.ToggleLabels()   <- layout.root
+ToggleMoveSpeed  [1 Varianten]
+    CampaignUI.ToggleMoveSpeed()   <- layout.root
+ToggleReplenishUnit  [1 Varianten]
+    CampaignUI.ToggleReplenishUnit(...)   <- army
+TradeInfo  [1 Varianten]
+    CampaignUI.TradeInfo()   <- government_screens
+TriggerBuildingCardSelectedEvent  [1 Varianten]
+    CampaignUI.TriggerBuildingCardSelectedEvent(...)   <- template.buildingframe
+TriggerBuildingInfoPanelOpenEvent  [1 Varianten]
+    CampaignUI.TriggerBuildingInfoPanelOpenEvent(...)   <- layout.root
+TriggerCharacterInfoPanelOpenedEvent  [1 Varianten]
+    CampaignUI.TriggerCharacterInfoPanelOpenedEvent(details.Address)   <- character_information
+TriggerTechnologyInfoPanelOpenEvent  [1 Varianten]
+    CampaignUI.TriggerTechnologyInfoPanelOpenEvent(...)   <- layout.root
+TriggerUnitSelectedEvent  [1 Varianten]
+    CampaignUI.TriggerUnitSelectedEvent(m_item_address)   <- template.campaignunitcard
+TurnsToResearch  [1 Varianten]
+    CampaignUI.TurnsToResearch(g_entities_clip:LuaCall('SelectedEntity').Address, tech_key)   <- technology_researching
+UILocalisationString  [13 Varianten]
+    CampaignUI.UILocalisationString('TX_target_NewState_Text_520079')   <- event_message
+    CampaignUI.UILocalisationString('TX_port_NewState_Text_3b0018')   <- event_message
+    CampaignUI.UILocalisationString('option2_text_normal_Text_260075')   <- event_message
+UnitSelectionChanged  [2 Varianten]
+    CampaignUI.UnitSelectionChanged({}, true)   <- army
+    CampaignUI.UnitSelectionChanged({}, false)   <- army
+UniversityResearching  [1 Varianten]
+    CampaignUI.UniversityResearching(g_entities_clip:LuaCall('SelectedEntity').Address)   <- technology_researching
+UpdateRadarView  [1 Varianten]
+    CampaignUI.UpdateRadarView({})   <- campaign_radar
+UpgradeFort  [1 Varianten]
+    CampaignUI.UpgradeFort(g_fort_ptr)   <- template.buildingframe
+ValidAssassinationTargets  [1 Varianten]
+    CampaignUI.ValidAssassinationTargets(agent.character.Address)   <- agents
+ValidDuelTargetsInResidence  [1 Varianten]
+    CampaignUI.ValidDuelTargetsInResidence(agent.character.Address)   <- agents
+ValidSabotageTarget  [1 Varianten]
+    CampaignUI.ValidSabotageTarget(agent.character.Address)   <- agents
+VisitingGentlemen  [1 Varianten]
+    CampaignUI.VisitingGentlemen(g_details.slot_key)   <- technology_stealing
+WindowsTime  [1 Varianten]
+    CampaignUI.WindowsTime()   <- army
+ZoomToAdviceLocation  [1 Varianten]
+    CampaignUI.ZoomToAdviceLocation()   <- advice_panel_buttons
+ZoomToCapital  [1 Varianten]
+    CampaignUI.ZoomToCapital()   <- layout.root
+ZoomToCharacter  [1 Varianten]
+    CampaignUI.ZoomToCharacter(g_details.Address, utils.CAMERA_TARGET_POS_RIGHT)   <- character_information
+ZoomToRegion  [1 Varianten]
+    CampaignUI.ZoomToRegion(region.Address, utilities.CAMERA_TARGET_POS_LEFT)   <- government_screens
