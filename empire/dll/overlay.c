@@ -231,6 +231,13 @@ static volatile LONG g_kbd;              /* Tastatur gehoert dem Overlay (Feld h
 static int g_moving, g_sizing, g_grab_x, g_grab_y, g_new_w, g_new_h;
 static int g_d3dcur_hidden, g_d3dcur_prev;
 static HCURSOR g_arrow;
+/* Vollbild (exklusiv): das Bild liegt 1:1 auf dem ganzen Monitor - auch wenn das Spielfenster kleiner ist
+ * (Schlacht 2026-11-20 18:11: Fenster 2580x2160 auf 3840x2160 -> rechtes Drittel "Desktop", Klicks im Overlay
+ * nach rechts zunehmend versetzt). Dann rechnet die Maus ueber den Monitor um. */
+static volatile LONG g_fs;
+static RECT g_mon;
+static DWORD g_disp_check;
+static int g_fix_logged;
 
 static void emit(const char *kind, int x, int y, int delta)
 {
@@ -245,10 +252,18 @@ static int cursor_in_panel(int *px, int *py)
 {
 	POINT pt;
 	RECT rc;
-	if (!g_hwnd || !GetCursorPos(&pt) || !ScreenToClient(g_hwnd, &pt) || !GetClientRect(g_hwnd, &rc)) return 0;
-	int cw = rc.right - rc.left, ch = rc.bottom - rc.top;
-	if (cw <= 0 || ch <= 0) return 0;
-	float bx = (float)pt.x * g_bbw / cw, by = (float)pt.y * g_bbh / ch;      /* Fenster -> Bildpuffer */
+	float bx, by;
+	if (!g_hwnd || !GetCursorPos(&pt)) return 0;
+	if (g_fs && g_mon.right > g_mon.left && g_mon.bottom > g_mon.top) {         /* Vollbild: Monitor -> Bildpuffer */
+		bx = (float)(pt.x - g_mon.left) * g_bbw / (g_mon.right - g_mon.left);
+		by = (float)(pt.y - g_mon.top) * g_bbh / (g_mon.bottom - g_mon.top);
+	} else {                                                                     /* Fenster: Client -> Bildpuffer */
+		if (!ScreenToClient(g_hwnd, &pt) || !GetClientRect(g_hwnd, &rc)) return 0;
+		int cw = rc.right - rc.left, ch = rc.bottom - rc.top;
+		if (cw <= 0 || ch <= 0) return 0;
+		bx = (float)pt.x * g_bbw / cw;
+		by = (float)pt.y * g_bbh / ch;
+	}
 	*px = (int)(bx - g_px0);
 	*py = (int)(by - g_py0);
 	return bx >= g_px0 && bx < g_px0 + g_pw && by >= g_py0 && by < g_py0 + g_ph;
@@ -377,6 +392,39 @@ static LRESULT CALLBACK hk_wndproc(HWND h, UINT m, WPARAM w, LPARAM l)
 		}
 	}
 	return CallWindowProcW(g_orig_wndproc, h, m, w, l);
+}
+
+static void check_display(IDirect3DDevice9 *dev)
+{
+	DWORD now = GetTickCount();
+	if (now - g_disp_check < 1000 || !g_hwnd) return;
+	g_disp_check = now;
+	IDirect3DSwapChain9 *sc = NULL;
+	D3DPRESENT_PARAMETERS pp;
+	memset(&pp, 0, sizeof pp);
+	if (FAILED(IDirect3DDevice9_GetSwapChain(dev, 0, &sc)) || !sc) return;
+	HRESULT hr = IDirect3DSwapChain9_GetPresentParameters(sc, &pp);
+	IDirect3DSwapChain9_Release(sc);                       /* keine Referenz halten */
+	if (FAILED(hr)) return;
+	MONITORINFO mi;
+	mi.cbSize = sizeof mi;
+	if (!GetMonitorInfoW(MonitorFromWindow(g_hwnd, MONITOR_DEFAULTTONEAREST), &mi)) return;
+	g_mon = mi.rcMonitor;
+	InterlockedExchange(&g_fs, pp.Windowed ? 0 : 1);
+	if (pp.Windowed || IsIconic(g_hwnd) || GetForegroundWindow() != g_hwnd) return;
+	RECT wr;
+	if (!GetWindowRect(g_hwnd, &wr)) return;
+	if (wr.left != g_mon.left || wr.top != g_mon.top || wr.right != g_mon.right || wr.bottom != g_mon.bottom) {
+		/* Vollbild, aber das Fenster deckt den Monitor nicht ab: Klicks daneben gingen an den Desktop.
+		 * Asynchron (SWP_ASYNCWINDOWPOS): das Spiel verarbeitet es in seiner Nachrichtenschleife, nicht in Present. */
+		SetWindowPos(g_hwnd, NULL, g_mon.left, g_mon.top, g_mon.right - g_mon.left, g_mon.bottom - g_mon.top,
+		             SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
+		if (g_fix_logged < 5) {
+			g_fix_logged++;
+			ov_log("Overlay: Vollbild, Spielfenster %ldx%ld statt %ldx%ld - auf Monitorgroesse gesetzt",
+			       wr.right - wr.left, wr.bottom - wr.top, g_mon.right - g_mon.left, g_mon.bottom - g_mon.top);
+		}
+	}
 }
 
 static void hook_window(IDirect3DDevice9 *dev, HWND present_wnd)
@@ -783,6 +831,7 @@ static HRESULT WINAPI hk_Present(IDirect3DDevice9 *dev, const RECT *a, const REC
 {
 	if (!g_present_seen) { g_present_seen = 1; ov_log("Overlay: Present wird aufgerufen"); }
 	__try { hook_window(dev, w); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+	__try { check_display(dev); } __except (EXCEPTION_EXECUTE_HANDLER) {}
 	InterlockedExchange(&g_kbd, kbd_wanted());
 	__try {                                    /* Hardware-Zeiger des Spiels (D3D) ueber dem Overlay aus */
 		if (g_over && !g_d3dcur_hidden) {
