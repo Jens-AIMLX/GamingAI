@@ -51,7 +51,7 @@ Koordinaten in Metern; y ist die Höhe, die Karte liegt in der x/z-Ebene.
 ```lua
 return { seq = 8, orders = {
   { unit = "2.1.3", cmd = "goto_location", args = { {x = 100, z = -50} } },
-  { unit = "2.1.4", cmd = "attack_unit",   args = { {unit = "1.1.2"}, true, false } },
+  { unit = "2.1.4", cmd = "attack_unit",   args = { {unit = "1.1.2"}, true, true } },
   { unit = "2.1.5", cmd = "halt" },
   { unit = "2.1.6", cmd = "release" },
 }}
@@ -63,5 +63,5 @@ return { seq = 8, orders = {
   (y = aktuelle Höhe der Einheit), `{unit="a.r.u"}` wird zur Einheit.
 - Jede Ausführung landet in `order_results` mit `ok`/`err`. Unbekannte Signaturen zeigen sich dort.
 
-Bekannte Signaturen aus den Original-Skripten: `goto_location(vec)`, `attack_unit(unit, bool, bool)`,
+Bekannte Signaturen aus den Original-Skripten: `goto_location(vec[, rennen])`, `attack_unit(unit, true, rennen)` (so in main.pack, z. B. Kavallerie mit `true`),
 `halt()`, `take_control()`, `release_control()`. Weitere Methoden: siehe `probe_runs/run3_ai_bridge_log.txt`.

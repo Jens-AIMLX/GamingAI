@@ -96,12 +96,20 @@ class Executor:
                 finals = {uid: finals[uid] for uid in ids if uid in finals}
                 if deploy:
                     finals = self._deploy_guard(g.name, finals, mine, fr)
+                close = 0
                 for uid in ids:
                     off = (finals[uid][0] - c[0], finals[uid][1] - c[1])
                     wps = [] if deploy else [(float(p[0]) + off[0], float(p[1]) + off[1])
                                              for p in (g.waypoints or []) if len(p) >= 2]
+                    # Neuplanung mit derselben Route: schon passierte Wegpunkte nicht noch einmal anlaufen
+                    wps = self._skip_passed(mine[uid].pos, wps, finals[uid])
+                    close += sum(1 for p in wps + [finals[uid]] if foes and w.nearest(p, foes)[1] < self.ROUTE_WARN_M)
                     gr.stages[uid] = wps + [finals[uid]]
                     gr.places[uid] = finals[uid]
+                if close and not deploy:
+                    self.plan_warnings.append(
+                        f"group '{g.name}': its route/target passes within {self.ROUTE_WARN_M:.0f} m of enemy units "
+                        "(musket range) - to get out of fire, first move straight away from the enemy, then sideways")
             else:
                 for uid in ids:
                     gr.places[uid] = mine[uid].pos
@@ -129,14 +137,24 @@ class Executor:
         for u in units:
             off = (u.x - c[0], u.z - c[1]) if c else (0.0, 0.0)
             wps = [(float(p[0]) + off[0], float(p[1]) + off[1]) for p in g.waypoints or [] if len(p) >= 2]
-            end = tgt.pos if tgt else None
-            while wps:
-                nxt = wps[1] if len(wps) > 1 else end
-                if nxt is None or dist(u.pos, nxt) > dist(wps[0], nxt):
-                    break
-                wps.pop(0)
+            wps = Executor._skip_passed(u.pos, wps, tgt.pos if tgt else None)
             if wps:
                 gr.stages[u.id] = wps
+
+    ROUTE_WARN_M = 100.0
+
+    @staticmethod
+    def _skip_passed(pos: tuple[float, float], wps: list[tuple[float, float]],
+                     end: tuple[float, float] | None) -> list[tuple[float, float]]:
+        """Wegpunkte, an denen die Einheit schon vorbei ist, entfallen: der naechste Punkt (oder das Ziel) ist von ihr
+        aus naeher als vom Wegpunkt. Sonst schickt jede Neuplanung sie zum ersten Wegpunkt zurueck."""
+        wps = list(wps)
+        while wps:
+            nxt = wps[1] if len(wps) > 1 else end
+            if nxt is None or dist(pos, nxt) > dist(wps[0], nxt):
+                break
+            wps.pop(0)
+        return wps
 
     def _resolve_relative(self, plan: Plan, w: World, mine: dict[int, Unit], fr: Frame | None
                           ) -> dict[int, tuple[tuple[float, float], float, dict[int, tuple[float, float]]]]:
@@ -386,21 +404,23 @@ class Executor:
         if want[0] == "goto":
             moved_target = dist(want[1], last[1]) > 5
             stuck = not u.moving and dist(u.pos, want[1]) > ARRIVE_M and since > REISSUE_S
-            return moved_target or stuck
+            return moved_target or stuck or want[2] != last[2]      # auch wenn nur "rennen" dazukommt
         if want[0] == "attack":
-            return want[1] != last[1] or (not u.moving and since > 15)
+            return want[1] != last[1] or want[2] != last[2] or (not u.moving and since > 15)
         return False   # halt / withdraw nur einmal
 
     def _to_order(self, u: Unit, want: tuple, w: World) -> Order | None:
         kind = want[0]
         if kind == "goto":
             x, z = want[1]
-            return Order(u.bid, "goto_location", [{"x": round(x, 1), "z": round(z, 1)}])
+            # Signaturen wie in den Original-Kampagnenskripten (main.pack): goto_location(Ziel, rennen),
+            # attack_unit(Ziel, true, rennen). Bis 2026-11-20 fehlte das Flag bzw. stand false -> Kavallerie trabte nur.
+            return Order(u.bid, "goto_location", [{"x": round(x, 1), "z": round(z, 1)}, bool(want[2])])
         if kind == "attack":
             t = w.units.get(want[1])
             if not t:
                 return None
-            return Order(u.bid, "attack_unit", [{"unit": t.bid}, bool(want[2]), False])
+            return Order(u.bid, "attack_unit", [{"unit": t.bid}, True, bool(want[2])])
         if kind == "halt":
             return Order(u.bid, "halt")
         if kind == "withdraw":

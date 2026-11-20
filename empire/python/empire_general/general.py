@@ -38,7 +38,15 @@ Tasks (one per group):
 to put certain units on a wing, give them their own group and target_point), "column" = one behind the other \
 (the foremost unit leads), "none" = each unit goes to target_point itself. spacing_m = gap between neighbouring units. \
 facing_deg -1 = towards the enemy army. waypoints = points to pass first (a flank march). Units on the move \
-face the way they march; a line forms when they arrive.
+face the way they march; a line forms when they arrive. run=true makes the units run (move and attack) - \
+for charges, pursuits, escapes and every order with "schnell", "rennen", "im Galopp", "Eilmarsch"; running \
+tires them.
+  Getting units OUT OF FIRE (retreat, "aus der Schussweite", "zurückziehen", "ausweichen"): the first leg must \
+lead straight AWAY from the nearest enemies (more than 150 m from every enemy unit); only then turn sideways or \
+towards an edge. Never route along the enemy's line or through points closer than ~150 m to enemy units - \
+riding along an enemy front is the deadliest thing a unit can do. Keep a route once given: send the same \
+waypoints and target_point in your next plans (points already passed are skipped automatically); changing them \
+every plan makes the units turn back and forth under fire.
   Placing groups relative to your army (preferred, especially for deployment - no sign errors): set ref and leave target_point []. The army frame: "forward" = towards the enemy army, "behind" = away from it, "right"/"left" as your troops see it facing the enemy. ref "front" = the centre of your current front line (the foremost infantry and artillery of your main body; \
 cavalry and units that have gone far ahead do not count), ref "rear" = the rearmost infantry/artillery of your \
 main body, or ref = a unit name from the report (e.g. "Artillerie 1", also one you move in this same plan: then its new place counts). back_m = metres behind the reference (negative = in front of it), right_m = metres to the right (negative = left); with a unit as ref, right_m is measured from that unit's side edge. attach = which point of this group's line is put at that point: "centre", "left_end" or "right_end". Examples: second line 60 m behind the front: ref "front", back_m 60, right_m 0, attach "centre". Infantry directly left of "Artillerie 1" with a 5 m gap: ref "Artillerie 1", back_m 0, right_m -5, attach "right_end" (the group's right end touches the gap). The same on the right: right_m 5, attach "left_end". Reserve 40 m behind "Infanterie 2": ref "Infanterie 2", back_m 40, right_m 0. Pulling units back (e.g. the \
@@ -55,7 +63,10 @@ give these waypoints; repeat the same waypoints in later plans (points already p
 line", "remain unchanged", "keep the current place"), with engage_within_m if they may strike back. Never give \
 move to the place where a group already stands: move re-forms the group as a new line around the target point \
 (ref "front" = the centre of the front), so the units would leave their places and bunch up or swap places.
-- withdraw: the units leave the battlefield (they march off the map and are saved).
+- withdraw: the units leave the battlefield for good (they march off the map and take no further part). Use it \
+ONLY when the sovereign explicitly orders them off the field ("vom Schlachtfeld abziehen", "das Schlachtfeld \
+verlassen", "flee", "all flee"). "Zurückziehen", "zurücknehmen", "ausweichen", "zum Rand" or "aus der \
+Schussweite" mean a move back (or to the named edge) with run=true - the units stay in the battle.
 Reflexes per group (the executor reacts within a second, without you):
 - engage_within_m (move, halt): a unit attacks any enemy that comes this close to its place and returns when \
 none is that close (e.g. 60-100 for cavalry guarding a flank).
