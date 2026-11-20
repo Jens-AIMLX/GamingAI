@@ -211,6 +211,10 @@ class Side:
         self.plans = 0
         self.immediate: list[tuple[float, str]] = []   # Sofortbefehle aus dem Chat: (Spielzeit, Text)
         self.ack_since: float | None = None             # naechster Plan nach diesem Zeitpunkt bestaetigt den Befehl
+        # Uebergabe per Chat: nur der erste Plan nach dem neuesten Chat-Befehl darf Einheiten uebergeben - sonst gaebe
+        # der Feldherr eine Einheit, die der Spieler per Hotkey zurueckgegeben hat, wegen des alten Befehls erneut ab
+        self.handover_since: float | None = None
+        self.ready_handover: tuple[list[int], list[int]] | None = None
 
     def changed(self, w: World) -> bool:
         if self.last_men is None:
@@ -234,6 +238,14 @@ class Side:
                     self.ready_deploy = plan
                 self.log({"type": kind, "alliance": self.alliance, "t": t_game, "secs": round(time.monotonic() - t0, 1),
                           "usage": getattr(self.general, "last_usage", None), "plan": plan.model_dump(exclude_none=True)})
+                if kind == "plan" and self.handover_since is not None and t_game >= self.handover_since:
+                    self.handover_since = None
+                    if plan.give_to_player or plan.take_from_player:
+                        self.ready_handover = (list(plan.give_to_player), list(plan.take_from_player))
+                elif kind == "plan" and (plan.give_to_player or plan.take_from_player):
+                    self.log({"type": "warning", "alliance": self.alliance, "t": t_game,
+                              "text": "Uebergabe im Plan ignoriert (kein neuer Chat-Befehl): "
+                                      f"an Spieler {plan.give_to_player}, zurueck {plan.take_from_player}"})
                 if kind == "plan" and self.ack_since is not None and t_game >= self.ack_since:
                     self.ack_since = None
                     self.log({"type": "info", "t": t_game, "text": f"Feldherr Allianz {self.alliance} zum Befehl: {plan.intent}"})
@@ -379,6 +391,7 @@ def main() -> int:
             s.immediate = (s.immediate + [(w.time, text.strip())])[-5:]
             s.force_plan = True
             s.ack_since = w.time
+            s.handover_since = w.time
             log({"type": "order", "alliance": a, "t": w.time, "text": text.strip()})
             say(f"[{w.time:6.0f}s] Befehl an die {label} (Allianz {a}): {text.strip()}"
                 + ("" if w.phase == "Deployed" else " - wird mit dem ersten Plan nach Schlachtbeginn umgesetzt"))
@@ -389,7 +402,7 @@ def main() -> int:
                 say(f"{cmd}: keine bekannte Einheit angegeben")
                 return out
             cmd = "sel_ai" if cmd == "give_ai" else "sel_player"
-            source = "Liste"
+            source = source if source == "Chat-Befehl" else "Liste"
         else:
             units = None
         if cmd == "deploy":
@@ -508,6 +521,21 @@ def main() -> int:
                 s.plans += 1
                 if plan.note:
                     s.notes = (s.notes + [plan.note])[-5:]
+            if s.ready_handover is not None:
+                give, take = s.ready_handover
+                s.ready_handover = None
+                # nur eigene Einheiten; abgeben nur, was die KI noch fuehrt - zuruecknehmen nur, was der Spieler fuehrt.
+                # Die Befehle laufen ueber carry (naechster Takt) wie Hotkey/Liste, inkl. 3-s-Sperre nach der Freigabe.
+                g_units = [w.units[i] for i in give if i in w.units and w.units[i].alliance == a and not w.units[i].manual]
+                t_units = [w.units[i] for i in take if i in w.units and w.units[i].alliance == a and w.units[i].manual]
+                if g_units:
+                    carry += handle("give_player " + ",".join(u.bid for u in g_units), "Chat-Befehl")
+                if t_units:
+                    carry += handle("give_ai " + ",".join(u.bid for u in t_units), "Chat-Befehl")
+                skipped = [i for i in give + take if i not in {u.id for u in g_units + t_units}]
+                if skipped:
+                    log({"type": "warning", "alliance": a, "t": w.time,
+                         "text": f"Uebergabe: Einheit(en) {skipped} uebersprungen (nicht eigene, schon beim Ziel oder unbekannt)"})
 
             if s.ex.plan is not None and (w.phase == "Deployed" or s.deploying):
                 orders += s.ex.tick(w)

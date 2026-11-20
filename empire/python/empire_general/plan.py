@@ -80,6 +80,8 @@ class Plan(BaseModel):
     note: str = Field(description="A short note to yourself for the next plans: what you are trying, what the enemy keeps "
                                   "doing, what worked or failed. Your last notes are shown in every report")
     groups: list[GroupOrder]
+    give_to_player: list[int] = Field(default_factory=list, description="your unit ids the sovereign takes over to command personally")
+    take_from_player: list[int] = Field(default_factory=list, description="unit ids the sovereign hands back to you")
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -142,6 +144,10 @@ class WirePlan(BaseModel):
     intent: str = Field(description="one or two sentences: the overall idea")
     note: str = Field(description="short note to yourself for the next plans")
     groups: list[WireGroup]
+    give_to_player: list[int] = Field(description="ONLY when an immediate order of the sovereign says they take units "
+                                                  "over to command personally: those unit ids (yours, not yet theirs); otherwise []")
+    take_from_player: list[int] = Field(description="ONLY when an immediate order of the sovereign hands units back to "
+                                                    "you: those unit ids (now commanded by them); otherwise []")
 
 
 def _pt(v: list[float]) -> list[float] | None:
@@ -173,4 +179,5 @@ def to_plan(w: WirePlan) -> Plan:
             target_unit=g.target_unit or None, run=g.run, on_target_lost=g.on_target_lost,
             engage_within_m=g.engage_within_m or None, keep_range_m=g.keep_range_m or None,
             fire_at_will=_flag(g.fire_at_will), skirmish=_flag(g.skirmish), reflexes=reflexes or None))
-    return Plan(intent=w.intent, note=w.note, groups=groups)
+    return Plan(intent=w.intent, note=w.note, groups=groups, give_to_player=list(w.give_to_player),
+                take_from_player=list(w.take_from_player))

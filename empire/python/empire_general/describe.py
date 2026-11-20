@@ -30,7 +30,8 @@ def _unit_line(w: World, u: Unit, foes: list[Unit], task: str | None = None, fr:
     if u.men == 0:
         s += ", DESTROYED"
     if u.manual:
-        s += " | COMMANDED BY THE PLAYER - do not give it orders"
+        s += (" | COMMANDED BY THE PLAYER - do not give it orders; if the sovereign hands it back to you (also with "
+              "'take everything back' / 'du übernimmst wieder alles'), put it into take_from_player")
     elif u.grouped:
         s += " | IN A PLAYER GROUP, NOT UNDER YOUR COMMAND - do not give it orders"
     if task:

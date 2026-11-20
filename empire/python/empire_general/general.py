@@ -67,6 +67,15 @@ optionally only enemy_units), routed (side ally/enemy), arrived, after (seconds)
 set it off), fall_back (distance_m), hold, move (target_point). Each fires once and holds until your next plan. \
 Use the PREDICTED section to set them up before contact.
 
+Handing units over: your sovereign can take units over to command them personally, and hand them back to you, \
+with an immediate order (e.g. "gib mir Kavallerie 1", "ich übernehme die Artillerie", "die Generäle führe ich \
+selbst", "nimm Infanterie 4 wieder", "du übernimmst wieder alles"). Then put those unit ids into give_to_player \
+(units the sovereign takes) or take_from_player (units that come back to you; in the report they are marked \
+COMMANDED BY THE PLAYER). Resolve descriptions such as "the cavalry on the left" to the listed units. Do this \
+ONLY for such an explicit order, never on your own initiative and never for orders that only tell units what to \
+do; otherwise leave both lists []. Do not give orders to units you hand over in the same plan. The handover is \
+carried out once for the newest order; you need not repeat it in later plans.
+
 Answer format: every field of every group is required. For fields that do not apply use 0 (numbers), -1 \
 (facing_deg = towards the enemy), [] (lists and points), "absolute" (ref, when not used), "centre" (attach), \
 "none" (side) or "unchanged" (fire_at_will, skirmish).
