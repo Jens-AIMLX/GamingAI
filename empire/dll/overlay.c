@@ -185,13 +185,37 @@ static HRESULT WINAPI hk_Reset(IDirect3DDevice9 *dev, D3DPRESENT_PARAMETERS *pp)
 	return hr;
 }
 
-/* Hot-Patch: 5 Fuellbytes vor fn -> "jmp hook", "mov edi,edi" am Anfang -> "jmp short -7". Original = fn + 2. */
+static BYTE *jmp_target(BYTE *at) { return at + 5 + *(LONG *)(at + 1); }
+
+/* einen vorhandenen 5-Byte-Sprung (E9) auf unseren Hook umsetzen; unser "Original" ist das bisherige Sprungziel */
+static void *chain_jump(BYTE *at, void *hook, const char *name, const char *who)
+{
+	BYTE *prev = jmp_target(at);
+	if (prev == (BYTE *)hook) { ov_log("Overlay: %s ist bereits umgeleitet", name); return NULL; }
+	DWORD old;
+	if (!VirtualProtect(at, 5, PAGE_EXECUTE_READWRITE, &old)) {
+		ov_log("Overlay: VirtualProtect fehlgeschlagen (%lu)", GetLastError());
+		return NULL;
+	}
+	*(LONG *)(at + 1) = (LONG)((BYTE *)hook - (at + 5));     /* nur das Sprungziel aendern - E9 bleibt stehen */
+	VirtualProtect(at, 5, old, &old);
+	FlushInstructionCache(GetCurrentProcess(), at, 5);
+	ov_log("Overlay: %s war schon umgeleitet (%s, Ziel 0x%08lx) - unser Overlay haengt sich davor", name, who, (DWORD)prev);
+	return prev;
+}
+
+/* Umleitung von fn auf hook; liefert die Funktion, die der Hook zum Weiterreichen aufruft (oder NULL):
+ *  - unberuehrt (Hot-Patch-Form): 5 Fuellbytes vor fn -> "jmp hook", "mov edi,edi" -> "jmp short -7"; weiter: fn + 2
+ *  - schon von einem anderen Programm umgeleitet (z. B. Steam-Overlay), Sprung E9 am Anfang oder Hot-Patch davor:
+ *    wir setzen nur das Sprungziel auf uns und reichen an das bisherige Ziel weiter. Kette: Spiel -> wir -> Steam -> d3d9 */
 static void *hotpatch(BYTE *fn, void *hook, const char *name)
 {
 	static const BYTE cc5[5] = { 0xCC, 0xCC, 0xCC, 0xCC, 0xCC }, nop5[5] = { 0x90, 0x90, 0x90, 0x90, 0x90 };
-	if (fn[0] == 0xEB && fn[1] == 0xF9 && fn[-5] == 0xE9) {
-		/* schon umgeleitet (zweite DLL-Instanz o. ae.): Ziel neu setzen */
-	} else if (!(fn[0] == 0x8B && fn[1] == 0xFF && (memcmp(fn - 5, cc5, 5) == 0 || memcmp(fn - 5, nop5, 5) == 0))) {
+	if (fn[0] == 0xE9)
+		return chain_jump(fn, hook, name, "Sprung am Funktionsanfang");
+	if (fn[0] == 0xEB && fn[1] == 0xF9 && fn[-5] == 0xE9)
+		return chain_jump(fn - 5, hook, name, "Hot-Patch");
+	if (!(fn[0] == 0x8B && fn[1] == 0xFF && (memcmp(fn - 5, cc5, 5) == 0 || memcmp(fn - 5, nop5, 5) == 0))) {
 		ov_log("Overlay: %s bei 0x%08lx nicht hot-patchbar (%02x %02x | %02x %02x %02x %02x %02x)", name, (DWORD)fn,
 		       fn[0], fn[1], fn[-5], fn[-4], fn[-3], fn[-2], fn[-1]);
 		return NULL;
