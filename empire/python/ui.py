@@ -50,7 +50,10 @@ EFFORTS = ["low", "medium", "high"]
 ACTIONS = [("Aufstellung übernehmen", "deploy"), ("Markierte → KI", "sel_ai"), ("Markierte → Spieler", "sel_player")]
 DEFAULT_HOTKEYS = {"deploy": "F9", "sel_ai": "F10", "sel_player": "F11"}
 
+IV_MIN, IV_MAX = 5, 120              # Planungsintervall je Seite (s Spielzeit)
+CF_MIN, CF_MAX = 0.25, 1.0          # Faktor fuers Intervall im Nahkampf
 DEFAULTS = {"model": next(iter(MODELS)), "effort": "low", "interval": 10, "close_interval": 5,
+            "interval_player": 10, "interval_enemy": 10, "close_factor": 0.5,
             "strategy": "standard", "strategy_drafts": {}, "orders_player": "", "orders_enemy": "", "deploy_prompt": "",
             "hotkeys": dict(DEFAULT_HOTKEYS), "own_groups": False, "review_baselines": {},
             "gun_zone_on": True, "gun_zone_m": 30,
@@ -86,9 +89,15 @@ def mask(k: str) -> str:
 # ---------------- Einstellungen ----------------
 def settings_load() -> dict:
     try:
-        s = {**DEFAULTS, **json.loads(SETTINGS.read_text(encoding="utf-8"))}
+        loaded = json.loads(SETTINGS.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError):
         return json.loads(json.dumps(DEFAULTS))
+    if "interval_player" not in loaded:      # frueher ein Intervall fuer beide + eines fuer den Nahkampf
+        iv = int(loaded.get("interval") or 10)
+        loaded["interval_player"] = loaded["interval_enemy"] = min(max(iv, IV_MIN), IV_MAX)
+        cf = float(loaded.get("close_interval") or iv / 2) / max(iv, 1)
+        loaded["close_factor"] = round(min(max(cf, CF_MIN), CF_MAX) * 20) / 20
+    s = {**DEFAULTS, **loaded}
     # frueheres Feld "Zusatzbefehle" (galt fuer beide Seiten) -> Befehle meiner Armee
     old = (s.pop("instructions", "") or "").strip()
     if old and not (s.get("orders_player") or "").strip():
@@ -226,17 +235,28 @@ class App(tk.Tk):
             row=1, column=5, sticky="w", pady=(6, 0))
 
         ttk.Label(f, text="Neuer Plan frühestens alle").grid(row=2, column=0, sticky="w", pady=(6, 0))
-        self.int_var = tk.IntVar(value=int(self.s["interval"]))
-        self.cint_var = tk.IntVar(value=int(self.s["close_interval"]))
+        self.ipl_var = tk.IntVar(value=int(self.s["interval_player"]))
+        self.ien_var = tk.IntVar(value=int(self.s["interval_enemy"]))
+        self.cf_var = tk.DoubleVar(value=float(self.s["close_factor"]))
         tb = ttk.Frame(f)
-        tb.grid(row=2, column=1, columnspan=5, sticky="w", pady=(6, 0))
-        ttk.Spinbox(tb, from_=3, to=60, textvariable=self.int_var, width=4).pack(side="left")
-        ttk.Label(tb, text=" s Spielzeit, im Nahkampf alle ").pack(side="left")
-        ttk.Spinbox(tb, from_=2, to=30, textvariable=self.cint_var, width=4).pack(side="left")
-        ttk.Label(tb, text=" s   (nur bei Ereignissen wie Verlusten, Annäherung, Feindbewegung, erledigten Zügen; "
-                           "sonst spätestens nach dem Dreifachen)", foreground="#777").pack(side="left")
-        for v in (self.model_var, self.effort_var, self.int_var, self.cint_var):
+        tb.grid(row=2, column=1, columnspan=6, sticky="w", pady=(6, 0))
+        ttk.Label(tb, text="meine Armee ").pack(side="left")
+        ttk.Spinbox(tb, from_=IV_MIN, to=IV_MAX, increment=5, textvariable=self.ipl_var, width=4).pack(side="left")
+        ttk.Label(tb, text=" s, Gegner ").pack(side="left")
+        ttk.Spinbox(tb, from_=IV_MIN, to=IV_MAX, increment=5, textvariable=self.ien_var, width=4).pack(side="left")
+        ttk.Label(tb, text=" s Spielzeit;  im Nahkampf \u00d7").pack(side="left")
+        ttk.Scale(tb, from_=CF_MIN, to=CF_MAX, variable=self.cf_var, length=110,
+                  command=lambda v: self._cf_snap()).pack(side="left", padx=(2, 2))
+        self.cf_label = ttk.Label(tb, text="", width=5)
+        self.cf_label.pack(side="left")
+        ttk.Label(f, text="(5–120 s, wirkt sofort; geplant wird nur bei Ereignissen wie Verlusten, Annäherung, "
+                          "Feindbewegung, erledigten Zügen - sonst spätestens nach dem Dreifachen)",
+                  foreground="#777").grid(row=6, column=0, columnspan=7, sticky="w")
+        self._cf_snap()
+        for v in (self.model_var, self.effort_var):
             v.trace_add("write", lambda *a: self._schedule_save())
+        for v in (self.ipl_var, self.ien_var):
+            v.trace_add("write", lambda *a: self._iv_changed())
 
         # Prompts als Registerkarten (Befehle | Strategie | Aufstellung), damit das Protokoll Platz behaelt
         self.nb = ttk.Notebook(root)
@@ -451,7 +471,51 @@ class App(tk.Tk):
 
         threading.Thread(target=run, daemon=True).start()
 
+    # ---------- Planungsintervall je Seite ----------
+    def _iv(self, var) -> int:
+        try:
+            return min(max(int(var.get()), IV_MIN), IV_MAX)
+        except (tk.TclError, ValueError):
+            return 10
+
+    def _cf(self) -> float:
+        try:
+            return round(min(max(float(self.cf_var.get()), CF_MIN), CF_MAX) * 20) / 20
+        except (tk.TclError, ValueError):
+            return 0.5
+
+    def _cf_snap(self) -> None:
+        """Schieber in 0,05er-Schritten; Anzeige und Feldherr (options.json) sofort aktualisieren."""
+        cf = self._cf()
+        if abs(float(self.cf_var.get()) - cf) > 1e-9:
+            self.cf_var.set(cf)
+        self.cf_label.config(text=f"{cf:.2f}".replace(".", ","))
+        self._iv_changed()
+
+    def _iv_changed(self) -> None:
+        if getattr(self, "_loading", False) or not hasattr(self, "zone_on_var"):
+            return
+        try:
+            self._write_options()
+        except OSError:
+            pass
+        self._schedule_save()
+
     # ---------- Modus ----------
+    def _ctl_sides(self) -> tuple[bool, bool]:
+        c = self.control_var.get()
+        return c in ("player", "both"), c in ("enemy", "both")
+
+    def _toggle_side(self, which: str) -> None:
+        """Overlay-Schalter: eigene Armee bzw. Gegner von der KI fuehren lassen ein/aus (wie 'KI fuehrt' oben)."""
+        own, foe = self._ctl_sides()
+        if which == "player":
+            own = not own
+        else:
+            foe = not foe
+        self.control_var.set("both" if own and foe else "player" if own else "enemy" if foe else "none")
+        self._write_control()
+
     def _write_control(self) -> None:
         try:
             EmpireBridge().write_config(control=self.control_var.get(), own_groups=self.own_groups_var.get(),
@@ -660,12 +724,11 @@ class App(tk.Tk):
                 drafts[name] = text
             else:
                 drafts.pop(name, None)
-        try:
-            interval, cint = int(self.int_var.get()), int(self.cint_var.get())
-        except (tk.TclError, ValueError):
-            interval, cint = self.s.get("interval", 10), self.s.get("close_interval", 5)
-        self.s.update({"model": self.model_var.get(), "effort": self.effort_var.get(), "interval": interval,
-                       "close_interval": cint, "strategy": name, "strategy_drafts": drafts,
+        ipl, ien, cf = self._iv(self.ipl_var), self._iv(self.ien_var), self._cf()
+        self.s.update({"model": self.model_var.get(), "effort": self.effort_var.get(),
+                       "interval_player": ipl, "interval_enemy": ien, "close_factor": cf,
+                       "interval": ipl, "close_interval": max(1, round(ipl * cf)),
+                       "strategy": name, "strategy_drafts": drafts,
                        "control": self.control_var.get(),
                        "orders_player": self.orders_player_text.get("1.0", "end").strip(),
                        "orders_enemy": self.orders_enemy_text.get("1.0", "end").strip(),
@@ -702,7 +765,9 @@ class App(tk.Tk):
 
     def _write_options(self) -> None:
         """runtime/options.json: Einstellungen, die der laufende Feldherr jede Sekunde neu liest."""
-        opts = {"gun_zone_m": self._zone_m() if self.zone_on_var.get() else 0}
+        opts = {"gun_zone_m": self._zone_m() if self.zone_on_var.get() else 0,
+                "interval_player": self._iv(self.ipl_var), "interval_enemy": self._iv(self.ien_var),
+                "close_factor": self._cf()}
         tmp = RUNTIME / "options.json.tmp"
         tmp.write_text(json.dumps(opts), encoding="utf-8")
         os.replace(tmp, RUNTIME / "options.json")
@@ -852,15 +917,16 @@ class App(tk.Tk):
         return overlay_panel.PanelData(
             tab=overlay_panel.TABS[self._ov_view - 1], running=bool(self.proc and self.proc.poll() is None),
             status=self.run_status.cget("text"), model=model, effort=self.effort_var.get(),
-            interval=f"Plan ≥{self.int_var.get()}/{self.cint_var.get()} s", control=control,
+            control=control,
             log=[l for l in log if l.strip()], orders_player=self.orders_player_text.get("1.0", "end-1c"),
             orders_enemy=self.orders_enemy_text.get("1.0", "end-1c"), strategy_name=self.strat_var.get(),
             strategy=self.strat_text.get("1.0", "end-1c"), deploy=self.deploy_text.get("1.0", "end-1c"),
             units_side=self.units_side.get(), units=units, units_info=self.units_info.cget("text"),
             active_orders=self.active_orders.cget("text"), chat_target=self.chat_target.get(),
             chat_text=self.chat_var.get(), hotkeys={k: v.get() for k, v in self.hotkey_vars.items()},
-            control_val=self.control_var.get(), own_groups=self.own_groups_var.get(), plan_s=self.int_var.get(),
-            close_s=self.cint_var.get(), selected=tuple(self.units_tree.selection()), scroll=dict(self._ov_scroll),
+            control_val=self.control_var.get(), own_groups=self.own_groups_var.get(),
+            iv_player=self._iv(self.ipl_var), iv_enemy=self._iv(self.ien_var), close_f=self._cf(),
+            selected=tuple(self.units_tree.selection()), scroll=dict(self._ov_scroll),
             menu_open=self._ov_menu, log_view=self._log_view(), zone_on=self.zone_on_var.get(), zone_m=self._zone_m(),
             pressed=self._ov_pressed[0] if self._ov_pressed and time.monotonic() - self._ov_pressed[1] < 0.3 else None,
             focus=self._ov_focus, caret=self._ov_caret, review=self._ov_review_data(),
@@ -940,6 +1006,8 @@ class App(tk.Tk):
         for kind, x, y, delta in self._ov_input.read():
             if kind == "down":
                 self._ov_down(x, y)
+            elif kind == "drag" and self._ov_drag is not None and self._ov_drag.action[0] == "slider":
+                self._ov_slider(self._ov_drag, x)
             elif kind == "drag" and self._ov_drag is not None:
                 key = self._ov_drag.action[1]
                 self._ov_scroll[key] = overlay_panel.scroll_to(self._ov_drag, y)
@@ -988,6 +1056,11 @@ class App(tk.Tk):
             else:
                 self._ov_focus = None
             return
+        if a[0] == "slider":                                    # Schieber: springen und ziehen
+            self._ov_slider(hot, x)
+            self._ov_drag = hot
+            self._ov_focus = None
+            return
         if a[0] == "chat_focus":
             self._ov_focus = "chat"
             self._ov_caret = len(self.chat_var.get())
@@ -999,6 +1072,12 @@ class App(tk.Tk):
             self._ov_act(a)
         except Exception as e:                                  # Aktion darf das Steuerpult nicht anhalten
             self._overlay_note(f"Aktion {a[0]} fehlgeschlagen: {e}")
+
+    def _ov_slider(self, hot, x: int) -> None:
+        """Nahkampf-Faktor aus der Zeigerposition auf dem Schieber (0,25 .. 1, Schritte 0,05)."""
+        frac = min(max((x - hot.bar[0]) / max(hot.bar[2] - hot.bar[0], 1), 0.0), 1.0)
+        self.cf_var.set(round((CF_MIN + frac * (CF_MAX - CF_MIN)) * 20) / 20)
+        self._cf_snap()
 
     def _ov_act(self, a: tuple) -> None:
         running = bool(self.proc and self.proc.poll() is None)
@@ -1070,12 +1149,11 @@ class App(tk.Tk):
         elif k == "m_effort":
             self.effort_var.set(a[1])
             self._schedule_save()
-        elif k == "m_plan":
-            self.int_var.set(max(3, min(60, self.int_var.get() + a[1])))
-            self._schedule_save()
-        elif k == "m_close":
-            self.cint_var.set(max(2, min(60, self.cint_var.get() + a[1])))
-            self._schedule_save()
+        elif k == "iv":                                     # Intervall je Seite, 5er-Schritte
+            var = self.ipl_var if a[1] == "player" else self.ien_var
+            var.set(min(max(self._iv(var) + a[2], IV_MIN), IV_MAX))
+        elif k == "ctl":                                    # KI fuehrt: eigene / Gegner ein-aus
+            self._toggle_side(a[1])
         elif k == "m_groups":
             self.own_groups_var.set(not self.own_groups_var.get())
             self._write_control()

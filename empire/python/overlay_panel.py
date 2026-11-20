@@ -78,8 +78,9 @@ class PanelData:
     control: str = ""            # Anzeige ("Beide Seiten")
     control_val: str = ""        # Wert ("both")
     own_groups: bool = False
-    plan_s: int = 10
-    close_s: int = 5
+    iv_player: int = 10          # Planungsintervall eigene Armee (s)
+    iv_enemy: int = 10           # ... Gegner
+    close_f: float = 0.5         # Faktor im Nahkampf
     log: list[str] = field(default_factory=list)
     orders_player: str = ""
     orders_enemy: str = ""
@@ -342,9 +343,36 @@ def render(p: PanelData) -> tuple[Image.Image, list[Hot]]:
                            ("Markierte \u2192 Spieler", "sel_player")):
             hk = p.hotkeys.get(cmd, "")
             x = pt.button(x, top, f"{label} {hk}".strip(), ("action", cmd), enabled=p.running)
-        st = f"{p.status}  |  {p.model}, {p.effort}, {p.interval}  |  KI f\u00fchrt: {p.control}"
-        d.text((12, top + 26), st, font=font(11), fill=GREEN if p.running else MUTED)
-        log_top = top + 46
+        # KI fuehrt: eigene Armee / Gegner (Schalter mit Symbol) - neben den Knoepfen, sonst in der Zeile darunter
+        own, foe = p.control_val in ("player", "both"), p.control_val in ("enemy", "both")
+        if x + 70 > W - 12:
+            x, row = 12, top + 26
+        else:
+            x, row = x + 4, top
+        x = _toggle(pt, x, row, "player", own)
+        _toggle(pt, x, row, "enemy", foe)
+        # Planungsintervall je Seite + Nahkampf-Faktor
+        y2 = top + 26 if row == top else top + 50
+        x = 12
+        for side, val, on in (("player", p.iv_player, own), ("enemy", p.iv_enemy, foe)):
+            _side_icon(d, x + 2, y2 + 3, side, on, 14)
+            x = pt.button(x + 20, y2, "\u2212", ("iv", side, -5))
+            d.text((x, y2 + 3), f"{val} s", font=font(11), fill=TEXT if on else MUTED)
+            x = pt.button(x + 34, y2, "+", ("iv", side, 5)) + 6
+        d.text((x, y2 + 3), "Nahkampf \u00d7" + f"{p.close_f:.2f}".replace(".", ","), font=font(11), fill=MUTED)
+        sx0 = x + 98
+        sx1 = min(sx0 + 110, W - 16)
+        if sx1 - sx0 >= 40:
+            cy = y2 + 10
+            d.rounded_rectangle((sx0, cy - 2, sx1, cy + 2), 2, fill=EDGE)
+            frac = (p.close_f - 0.25) / 0.75
+            kx = int(sx0 + frac * (sx1 - sx0))
+            d.rounded_rectangle((sx0, cy - 2, kx, cy + 2), 2, fill=GOLD)
+            d.ellipse((kx - 6, cy - 6, kx + 6, cy + 6), fill=GOLD, outline=(90, 80, 50, 255))
+            pt.hots.append(Hot(sx0 - 6, y2, sx1 + 6, y2 + 20, ("slider", "close_f"), bar=(sx0, y2, sx1, y2 + 20)))
+        st = f"{p.status}  |  {p.model}, {p.effort}"
+        d.text((12, y2 + 24), st, font=font(11), fill=GREEN if p.running else MUTED)
+        log_top = y2 + 44
         if p.active_orders:
             ao = _wrap(p.active_orders, font(11), W - 130)[:2]
             for i, line in enumerate(ao):
@@ -457,10 +485,37 @@ def _review_view(pt: Painter, top: int, bottom_y: int) -> None:
     pt.button(x, bottom_y - 24, "Schlie\u00dfen", ("rev_close",))
 
 
+def _side_icon(d, x: int, y: int, side: str, on: bool, s: int = 16) -> None:
+    """Symbol: eigene Armee = Fahne (blau), Gegner = gekreuzte Saebel (rot); aus = grau."""
+    if side == "player":
+        col = BLUE if on else (110, 112, 120, 255)
+        d.line((x + s * 0.2, y, x + s * 0.2, y + s), fill=col, width=2)                     # Fahnenstange
+        d.polygon([(x + s * 0.25, y + 1), (x + s * 0.95, y + s * 0.2), (x + s * 0.25, y + s * 0.55)], fill=col)
+    else:
+        col = (235, 95, 80, 255) if on else (110, 112, 120, 255)
+        d.line((x + 1, y + s - 1, x + s - 1, y + 1), fill=col, width=2)                      # Klingen
+        d.line((x + 1, y + 1, x + s - 1, y + s - 1), fill=col, width=2)
+        d.line((x + s * 0.05, y + s * 0.55, x + s * 0.45, y + s * 0.95), fill=col, width=2)  # Handschutz
+        d.line((x + s * 0.55, y + s * 0.95, x + s * 0.95, y + s * 0.55), fill=col, width=2)
+
+
+def _toggle(pt: Painter, x: int, y: int, side: str, on: bool) -> int:
+    """Zweistufiger Schalter mit Symbol: KI fuehrt diese Seite ein/aus."""
+    w = 32
+    pressed = pt.p.pressed == ("ctl", side)
+    fill = (90, 80, 50, 255) if pressed else ((60, 55, 40, 255) if on else BUTTON_OFF)
+    pt.d.rounded_rectangle((x, y, x + w, y + 20), 4, fill=fill, outline=GOLD if on else EDGE, width=2 if on else 1)
+    _side_icon(pt.d, x + 9, y + 2, side, on, 16)
+    if not on:                                               # aus: schraeger Strich
+        pt.d.line((x + 6, y + 17, x + w - 6, y + 3), fill=(200, 200, 200, 200), width=1)
+    pt.hots.append(Hot(x, y, x + w, y + 20, ("ctl", side)))
+    return x + w + 6
+
+
 def _menu(pt: Painter) -> None:
     """Einstellungen (wie oben im Fenster): KI fuehrt, Modell, Denktiefe, Planabstand, Gruppenmanagement."""
     p, d = pt.p, pt.d
-    x0, y0, x1, y1 = W - 330, 32, W - 10, 254
+    x0, y0, x1, y1 = W - 330, 32, W - 10, 226
     d.rounded_rectangle((x0, y0, x1, y1), 6, fill=(26, 28, 36, 250), outline=GOLD)
     pt.hots.append(Hot(x0, y0, x1, y1, ("m_none",)))           # Klicks ins Menue nicht durchreichen
     y = y0 + 8
@@ -476,15 +531,6 @@ def _menu(pt: Painter) -> None:
     x = x0 + 90
     for e in EFFORTS:
         x = pt.button(x, y, e, ("m_effort", e), accent=p.effort == e)
-    y += 28
-    d.text((x0 + 10, y + 3), "Plan ≥", font=font(11, True), fill=GOLD)    # fruehestens alle (Ereignis-Planung)
-    x = pt.button(x0 + 90, y, "\u2212", ("m_plan", -1))
-    d.text((x + 2, y + 3), f"{p.plan_s} s", font=font(11), fill=TEXT)
-    x = pt.button(x + 36, y, "+", ("m_plan", 1))
-    d.text((x + 8, y + 3), "Nahkampf", font=font(11), fill=MUTED)
-    x = pt.button(x + 66, y, "\u2212", ("m_close", -1))
-    d.text((x + 2, y + 3), f"{p.close_s} s", font=font(11), fill=TEXT)
-    pt.button(x + 30, y, "+", ("m_close", 1))
     y += 28
     pt.button(x0 + 10, y, "Eigenes Gruppenmanagement: " + ("ein" if p.own_groups else "aus"), ("m_groups",),
               accent=p.own_groups)

@@ -19,8 +19,9 @@ Dieselben Befehle nimmt der Feldherr aus <Spielordner>/ai_bridge/commands.txt (e
 sel_player) - so loesen die Buttons des Steuerpults sie aus.
 
 Ablauf (nach rome-battle-ai): der Executor laeuft jede Sekunde (Bruecken-Takt) ohne Modell; der Feldherr
-plant im Hintergrund neu - fruehestens alle --interval Sekunden Spielzeit (--close-interval, sobald Armeen
-< 250 m voneinander stehen) und nur bei einem Ereignis (Verluste, gebrochene Einheiten, Abstandsstufe,
+plant im Hintergrund neu - fruehestens nach dem Intervall der Seite (Steuerpult: eigene Armee / Gegner je 5-120 s,
+runtime/options.json, wirkt sofort; ohne Steuerpult --interval), sobald Armeen < 250 m voneinander stehen nach dem
+Intervall x Nahkampf-Faktor (0,25..1), und nur bei einem Ereignis (Verluste, gebrochene Einheiten, Abstandsstufe,
 Feindbewegung, Befehlsfehler, Reflex, erledigte Bewegungen), sonst spaetestens nach dem dreifachen Intervall.
 Fuehrt die KI keine einzige Einheit (alle beim Spieler), ruht die Planung bis zur Rueckgabe oder einem Befehl.
 Der Bericht hat einen festen Teil je Schlacht (Leseanleitung + Stammdaten, Prompt-Cache) und eine kurze Lage.
@@ -606,6 +607,12 @@ def main() -> int:
             if mt != options_mtime:
                 options_mtime = mt
                 new_opts = json.loads(options_path.read_text(encoding="utf-8"))
+                for k, label in (("interval_player", "eigene Armee"), ("interval_enemy", "Gegner")):
+                    if k in new_opts and new_opts.get(k) != options.get(k) and k in options:
+                        say(f"[{stamp(w.time)}] Planungsintervall {label}: {float(new_opts[k]):.0f} s")
+                if "close_factor" in new_opts and new_opts.get("close_factor") != options.get("close_factor") \
+                        and "close_factor" in options:
+                    say(f"[{stamp(w.time)}] Nahkampf-Faktor: x{float(new_opts['close_factor']):.2f}")
                 if new_opts.get("gun_zone_m") != options.get("gun_zone_m"):
                     say(f"[{stamp(w.time)}] Sicherheitsabstand um die eigene Artillerie: "
                         + (f"{float(new_opts.get('gun_zone_m') or 0):.0f} m" if new_opts.get("gun_zone_m") else "aus"))
@@ -699,7 +706,11 @@ def main() -> int:
                 foes = w.enemies(a)
                 cm, ce = centroid(w.side(a)), centroid(foes)
                 close = bool(cm and ce and min((dist(u.pos, f.pos) for u in w.side(a) for f in foes), default=1e9) < 250)
-                interval = args.close_interval if close else args.interval
+                key = "interval_player" if a == (w.player_alliance or 1) else "interval_enemy"
+                base = min(max(float(options.get(key) or args.interval), 5.0), 120.0)
+                factor = min(max(float(options.get("close_factor") or args.close_interval / max(args.interval, 1)),
+                                 0.25), 1.0)
+                interval = base * factor if close else base
                 gap = w.time - s.last_plan_t
                 first = s.ex.plan is None and gap >= 3   # nach Fehler nicht sekuendlich wiederholen
                 reason = None
