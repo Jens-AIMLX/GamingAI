@@ -19,16 +19,21 @@ do
 	-- zeigen nie alte Daten, sondern bleiben leer bis zur ersten Erfassung (Zugbeginn oder erster Klick)
 	pcall(os.remove, P .. "campaign_state.json")
 
+	-- Uhr fuer Abstaende: os.clock() (unter Windows Sekunden seit Prozessstart, fein aufgeloest). NICHT os.time():
+	-- Empire rechnet Lua-Zahlen mit einfacher Genauigkeit, os.time() (~1,8 Mrd.) springt dort in 128-s-Schritten -
+	-- jede Pruefung "seit 2 s Ruhe" o. ae. war damit kaputt (Diagnose 2026-11-20 23:57: 17 s Abstand = "+0s").
+	local function now() return os.clock() end
+
 	-- Diagnose Ladeablauf (voruebergehend): welche Spielereignisse kommen nach dem Laden ohne Eingabe? Jedes Ereignis
 	-- aus data.events mit Uhrzeit nach ai_bridge/campaign_events.log - nur die ersten 300 s nach Skriptstart, hoechstens
 	-- 3000 Zeilen. Reines Lua (Datei schreiben), keine Engine-Aufrufe.
-	local diag_t0, diag_n = os.time(), 0
+	local diag_t0, diag_n = now(), 0
 	local function diag(msg)
-		if diag_n >= 3000 or os.time() - diag_t0 > 300 then return end
+		if diag_n >= 3000 or now() - diag_t0 > 300 then return end
 		diag_n = diag_n + 1
 		pcall(function()
 			local f = io.open(P .. "campaign_events.log", diag_n == 1 and "w" or "a")
-			f:write(os.date("%H:%M:%S"), string.format("  +%3ds  ", os.time() - diag_t0), msg, "\n")
+			f:write(os.date("%H:%M:%S"), string.format("  +%3ds  ", now() - diag_t0), msg, "\n")
 			f:close()
 		end)
 	end
@@ -200,7 +205,7 @@ do
 		local okp, mine = pcall(C.IsPlayersTurn)
 		if not (okp and mine) then return end
 		capturing = true
-		local heavy = kind ~= "action" or os.time() - last_heavy >= HEAVY_EVERY
+		local heavy = kind ~= "action" or now() - last_heavy >= HEAVY_EVERY
 
 		-- Absturzschutz: letzter Lauf bei einem Schritt abgestuerzt -> Schritt kuenftig auslassen
 		local skip, open = {}, nil
@@ -333,7 +338,7 @@ do
 				if type(d) == "table" and type(d.Health) == "number" then ref[1].health = d.Health end
 			end
 		end)
-			last_heavy = os.time()
+			last_heavy = now()
 			S.regions_written = os.date("%Y-%m-%d %H:%M:%S")
 		end
 		step("forschung", function()
@@ -449,26 +454,32 @@ do
 		-- (ai_bridge/campaign_request.txt) ab. Gestellt wird er NUR beim Zugbeginn und bei Eingaben des Spielers
 		-- (Klick, Auswahl, Fenster) - wie in den Originalskripten. Beim Laden gestellt (WorldCreated/NewSession/
 		-- UICreated) stuerzte Empire 2 s nach Ladebeginn ab (2026-11-20 23:41, c0000005 bei Empire.exe+0x1D54A9).
-		-- Nach dem Laden mitten im Zug startet ihn also der erste Klick; sein erster Tick erfasst dann voll ("load").
+		-- Nach dem Laden mitten im Zug startet ihn der erste Timer des Spiels nach UICreated (kommt ohne Eingabe) oder
+		-- der erste Klick; sein erster Tick erfasst dann voll ("load").
 		-- Jedes Stellen bekommt einen eigenen Namen; nur der zuletzt gestellte zaehlt - eine aeltere Kette laeuft
 		-- aus, es laufen nie zwei parallel; bei einer Eingabe ohne Tick seit 3 s wird neu gestellt.
+		local ui_ready = false                                -- UICreated gesehen: Laden fast fertig
+		pcall(es.AddEventCallBack, "UICreated", function() ui_ready = true end)
 		local TICK = "empire_bridge_tick_"
-		local tick_seq, tick_name, tick_seen = 0, nil, -1e9
+		local tick_seq, tick_name, tick_seen, armed_at = 0, nil, -1e9, -1e9
+		local function idle()                                 -- seit 3 s weder getickt noch gestellt: Takt tot
+			return now() - math.max(tick_seen, armed_at) > 3
+		end
 		local function arm()
 			tick_seq = tick_seq + 1
 			local name = TICK .. tick_seq
 			local ok = pcall(function() es.game_interface:add_time_trigger(name, 1) end)
 			diag("Takt gestellt: " .. name .. (ok and "" or " (FEHLER)"))
-			if ok and es.game_interface then tick_name = name end
+			if ok and es.game_interface then tick_name = name; armed_at = now() end
 		end
 		-- Aktionen im eigenen Zug merken; der Takt erfasst, sobald 2 s Ruhe ist (eine Klickfolge = eine Erfassung)
 		local dirty_at = nil
 		local function mark()
-			dirty_at = os.time()
+			dirty_at = now()
 		end
 		local function input()                                -- Eingabe des Spielers: merken und Takt sicherstellen
-			dirty_at = os.time()
-			if os.time() - tick_seen > 3 then arm() end      -- Takt tot oder noch nie gelaufen? neu stellen
+			dirty_at = now()
+			if idle() then arm() end                      -- Takt tot oder noch nie gelaufen? neu stellen
 		end
 		for _, name in ipairs({ "ComponentLClickUp", "PanelClosedCampaign", "CharacterSelected", "SettlementSelected",
 		                        "FortSelected", "UnitSelectedCampaign" }) do
@@ -484,8 +495,14 @@ do
 		local need_initial = true
 		pcall(es.AddEventCallBack, "TimeTrigger", function(context)
 			local okn, name = pcall(function() return context.string end)
-			if not okn or name ~= tick_name then return end      -- fremder Timer oder aeltere Kette: auslaufen lassen
-			tick_seen = os.time()
+			if not okn then return end
+			if name ~= tick_name then                            -- fremder Timer oder aeltere Kette: auslaufen lassen
+				-- Das Spiel verarbeitet Timer, die Karte ist also fertig geladen (nach dem Laden kommt so ein Timer
+				-- ohne jede Eingabe, 5 s nach UICreated - Diagnose 23:57): eigenen Takt starten, falls er nicht laeuft
+				if ui_ready and idle() then arm() end
+				return
+			end
+			tick_seen = now()
 			diag("Takt: " .. name)
 			pcall(function()
 				if need_initial then
@@ -499,7 +516,7 @@ do
 					os.remove(P .. "campaign_request.txt")
 					dirty_at = nil
 					run("request")
-				elseif dirty_at and os.time() - dirty_at >= 2 then
+				elseif dirty_at and now() - dirty_at >= 2 then
 					dirty_at = nil
 					run("action")
 				end

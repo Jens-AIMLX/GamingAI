@@ -124,3 +124,5 @@ Bauschlange: kein Feld in den Slots gefunden (es war nichts im Bau?) – die Erf
 3. Erste Handlungen (Forschung, Bau, Rekrutierung, Steuern), einzeln und abschaltbar.
 
 - **Timer nie beim Laden stellen:** `add_time_trigger` in WorldCreated/NewSession/UICreated liess Empire 2 s nach Ladebeginn abstuerzen (c0000005, Empire.exe+0x1D54A9). Die Originalskripte stellen Timer nur ab Zugbeginn oder bei Eingaben - der Takt der Erfassung ebenso (erster Klick nach dem Laden startet ihn).
+- **`os.time()` taugt nicht fuer Abstaende:** Empire rechnet Lua-Zahlen mit einfacher Genauigkeit; `os.time()` (~1,8 Mrd.) springt in 128-s-Schritten. Fuer Abstaende `os.clock()` (Windows: Sekunden seit Prozessstart), fuer Zeitstempel `os.date()`.
+- **Nach dem Laden** kommen NewSession, LoadingGame, WorldCreated (+3 s), UICreated (+12 s) und etwa 5 s spaeter ein Timer des Spiels (TimeTrigger) - ohne Eingabe. Dieser Timer startet den Takt der Erfassung.
