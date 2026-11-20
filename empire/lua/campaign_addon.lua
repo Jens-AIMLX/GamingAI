@@ -189,7 +189,7 @@ do
 			try("IsPlayersTurn()", C.IsPlayersTurn)
 			try("RetrieveFactionMilitaryForceLists(pid, true)", C.RetrieveFactionMilitaryForceLists, pid, true)
 			try("RetrieveFactionMilitaryForceLists(pid, false)", C.RetrieveFactionMilitaryForceLists, pid, false)
-			try("RetrieveFactionRegionList(pid)", C.RetrieveFactionRegionList, pid)
+			local regions = try("RetrieveFactionRegionList(pid)", C.RetrieveFactionRegionList, pid)
 			try("RetrieveFactionAgentsList(pid)", C.RetrieveFactionAgentsList, pid)
 			try("FactionDetails(pid)", C.FactionDetails, pid)
 			try("FactionDetails(key)", C.FactionDetails, key)
@@ -198,9 +198,18 @@ do
 			try("TradeInfo()", C.TradeInfo)
 			try("PrestigeDetails()", C.PrestigeDetails)
 			try("MonarchyInfo()", C.MonarchyInfo)
-			try("GovernorshipList()", C.GovernorshipList)
-			try("TheatreList()", C.TheatreList)
+			-- Aufrufe NUR in der Form, in der die UI-Skripte des Spiels sie machen (docs/campaign_ui_signatures.txt):
+			-- ein fehlendes oder falsches Argument laesst die Engine abstuerzen (TheatreList() ohne Argument, 21:18)
 			try("RetrieveVisibleEnitityDetails()", C.RetrieveVisibleEnitityDetails)
+			local gships = try("GovernorshipList(pid)", C.GovernorshipList, pid)
+			if type(gships) == "table" and type(gships[1]) == "table" and gships[1].Key ~= nil then
+				try("RetrieveGovernorshipDetails(GovernorshipList(pid)[1].Key)", C.RetrieveGovernorshipDetails, gships[1].Key)
+			end
+			try("HomeTheatre(pid)", C.HomeTheatre, pid)
+			try("TheatreList(true)", C.TheatreList, true)
+			if type(regions) == "table" and type(regions[1]) == "table" and regions[1].SettlementAddress ~= nil then
+				try("SettlementsRegion(regions[1].SettlementAddress)", C.SettlementsRegion, regions[1].SettlementAddress)
+			end
 			outf:write("== Ende der Lese-Probe ==\n")
 			outf:close()
 			prog:close()
