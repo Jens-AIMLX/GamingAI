@@ -17,6 +17,7 @@ zuordnen kann - Bild und Trefferflaechen stammen so aus derselben Zeichnung.
 from __future__ import annotations
 
 import os
+import re
 import struct
 import time
 from dataclasses import dataclass, field
@@ -25,9 +26,15 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 W, H = 560, 360
+# Protokoll-Ansichten (wie die Tabs im Steuerpult-Fenster); Spezialansichten zeigen nur ihre Sorte
+LOG_VIEWS = ["Alles", "Plan Allianz 1", "Plan Allianz 2", "Befehle", "Meldungen"]
+LOG_SHORT = {"Alles": "Alles", "Plan Allianz 1": "Plan 1", "Plan Allianz 2": "Plan 2", "Befehle": "Befehle",
+             "Meldungen": "Meldungen"}
 TABS = ["Feldherr", "Befehle", "Strategie", "Aufstellung", "Einheiten"]
 CONTROLS = [("Gegner", "enemy"), ("Meine Armee", "player"), ("Beide", "both"), ("Aus", "none")]
 EFFORTS = ["low", "medium", "high"]
+
+PLAN_RE = re.compile(r"(?:Plan|Aufstellungsplan) Allianz (\d+)")
 
 BG = (20, 22, 28, 215)
 PANEL = (34, 37, 46, 235)
@@ -87,6 +94,9 @@ class PanelData:
     hotkeys: dict = field(default_factory=dict)
     scroll: dict = field(default_factory=dict)             # Feld -> erste sichtbare Zeile (log: None = Ende)
     menu_open: bool = False
+    log_view: str = "Alles"
+    zone_on: bool = True
+    zone_m: int = 30
     pressed: tuple | None = None                           # gerade gedrueckte Aktion (Rueckmeldung beim Klick)
 
 
@@ -187,6 +197,17 @@ class Painter:
                              bar=bar))
 
 
+def log_category(line: str) -> str:
+    """Sorte einer Protokollzeile: 'Plan Allianz N', 'Befehle' oder 'Meldungen'."""
+    m = PLAN_RE.search(line)
+    if m and m.group(1) in ("1", "2"):
+        return f"Plan Allianz {m.group(1)}"
+    if ("Befehl an die" in line or "zum Befehl" in line or "uebergeben" in line or "Sofortbefehle" in line
+            or "Aufstellung angefordert" in line):
+        return "Befehle"
+    return "Meldungen"
+
+
 def _log_color(line: str):
     if " Plan Allianz" in line or "Aufstellungsplan" in line:
         return GREEN
@@ -242,6 +263,10 @@ def render(p: PanelData) -> tuple[Image.Image, list[Hot]]:
                 d.text((12, log_top + i * 14), line, font=font(11), fill=BLUE)
             pt.button(W - 116, log_top - 2, "Befehle aufheben", ("clear_orders",), enabled=p.running)
             log_top += max(14 * len(ao), 20) + 4
+        x = 12
+        for v in LOG_VIEWS:                       # Filter wie die Protokoll-Tabs im Fenster
+            x = pt.button(x, log_top, LOG_SHORT[v], ("logview", v), accent=p.log_view == v)
+        log_top += 24
         pt.textbox("log", (12, log_top, W - 12, bottom_y - 4), "\n".join(p.log[-300:]), follow_end=True,
                    colors=_log_color, f=font(11))
     elif p.tab == "Befehle":
@@ -311,7 +336,7 @@ def render(p: PanelData) -> tuple[Image.Image, list[Hot]]:
 def _menu(pt: Painter) -> None:
     """Einstellungen (wie oben im Fenster): KI fuehrt, Modell, Denktiefe, Planabstand, Gruppenmanagement."""
     p, d = pt.p, pt.d
-    x0, y0, x1, y1 = W - 330, 32, W - 10, 226
+    x0, y0, x1, y1 = W - 330, 32, W - 10, 254
     d.rounded_rectangle((x0, y0, x1, y1), 6, fill=(26, 28, 36, 250), outline=GOLD)
     pt.hots.append(Hot(x0, y0, x1, y1, ("m_none",)))           # Klicks ins Menue nicht durchreichen
     y = y0 + 8
@@ -339,6 +364,12 @@ def _menu(pt: Painter) -> None:
     y += 28
     pt.button(x0 + 10, y, "Eigenes Gruppenmanagement: " + ("ein" if p.own_groups else "aus"), ("m_groups",),
               accent=p.own_groups)
+    y += 28
+    x = pt.button(x0 + 10, y, "Abstand Artillerie: " + ("ein" if p.zone_on else "aus"), ("m_zone_toggle",),
+                  accent=p.zone_on)
+    x = pt.button(x, y, "\u2212", ("m_zone", -5))
+    d.text((x + 2, y + 3), f"{p.zone_m} m", font=font(11), fill=TEXT if p.zone_on else MUTED)
+    pt.button(x + 40, y, "+", ("m_zone", 5))
     y += 28
     d.text((x0 + 10, y + 2), "Modus gilt ab der n\u00e4chsten Schlacht", font=font(10), fill=MUTED)
     pt.button(x1 - 70, y - 2, "Schlie\u00dfen", ("m_close_menu",))

@@ -60,6 +60,7 @@ class Executor:
         self.limber: dict[int, dict] = {}            # Auf-/Abprotz-Zustand je Geschuetz
         self.lanes: list = []                        # Schusskanaele der Feldgeschuetze (letzter Takt)
         self.reached: dict[int, list[tuple[float, float]]] = {}   # erreichte Wegpunkte je Einheit
+        self.gun_zone_m = 30.0                       # Sicherheitsabstand um eigene Geschuetze (0 = aus)
 
     # ---------- neuer Plan ----------
     DEPLOY_MAX_M = 150.0      # Aufstellung: hoechstens so weit hinter die hinterste Einheit
@@ -129,8 +130,7 @@ class Executor:
                 if g.skirmish is not None and "skirmish" not in self.disabled:
                     self._pending_flags.append(Order(bid, "skirmish", [bool(g.skirmish)]))
             self.groups.append(gr)
-        if not deploy:              # in der Aufstellung schiesst niemand
-            self._keep_out_of_lanes(w)
+        self._keep_out_of_lanes(w, deploy)
         # Neue Befehle sofort erzwingen
         self.last.clear()
 
@@ -143,15 +143,19 @@ class Executor:
                     out.setdefault(uid, g.order.target_unit)
         return out
 
-    def _keep_out_of_lanes(self, w: World) -> None:
+    def _keep_out_of_lanes(self, w: World, deploy: bool = False) -> None:
         """Plaetze und Wege der eigenen Einheiten aus den Schusskanaelen der Feldgeschuetze halten: Plaetze im Kanal
         werden seitlich herausgeschoben, Wege durch den Kanal bekommen einen Umweg (seitlich entlang oder hinter dem
-        Geschuetz herum). Auch fuer attack: der Weg zum Ziel fuehrt nicht durch das eigene Schussfeld."""
-        ls = firelanes.lanes(w, self.alliance, self._gun_targets())
-        if not ls:
+        Geschuetz herum). Auch fuer attack: der Weg zum Ziel fuehrt nicht durch das eigene Schussfeld.
+        Dazu die Sperrzone (gun_zone_m) um JEDES eigene Geschuetz - auch in der Aufstellung (dann ohne Kanaele)."""
+        ls = [] if deploy else firelanes.lanes(w, self.alliance, self._gun_targets())
+        gs = firelanes.guns(w, self.alliance) if self.gun_zone_m > 0 else []
+        fr = w.frame(self.alliance)
+        away = (-fr.fwd[0], -fr.fwd[1]) if fr else None
+        if not ls and not gs:
             return
         for gr in self.groups:
-            moved = detoured = 0
+            moved = detoured = zoned = 0
             names: set[str] = set()
             for uid in gr.unit_ids:
                 u = w.units.get(uid)
@@ -167,6 +171,10 @@ class Executor:
                             p = l.exit_point(p)
                             moved += 1
                             names.add(l.gun.name)
+                    q = firelanes.zone_push(p, gs, self.gun_zone_m, away)
+                    if q is not None:
+                        p = q
+                        zoned += 1
                     if p != gr.places[uid]:
                         gr.places[uid] = p
                         gr.stages[uid] = (gr.stages.get(uid) or [])[:-1] + [p]
@@ -179,13 +187,18 @@ class Executor:
                 path = [u.pos] + stages + ([end] if end else [])
                 new: list[tuple[float, float]] = []
                 for a, b in zip(path, path[1:]):
+                    det = []
                     for l in own:
                         det = l.detour(a, b)
                         if det:
-                            new += det
                             detoured += 1
                             names.add(l.gun.name)
                             break
+                    if not det:
+                        det = firelanes.zone_detour(a, b, gs, self.gun_zone_m)
+                        if det:
+                            detoured += 1
+                    new += det
                     new.append(b)
                 if end:
                     new = new[:-1]          # das Ziel selbst ist kein Wegpunkt
@@ -193,8 +206,12 @@ class Executor:
                     gr.stages[uid] = new
             if moved or detoured:
                 self.plan_warnings.append(
-                    f"group '{gr.order.name}': kept out of the line of fire of {', '.join(sorted(names))} "
+                    f"group '{gr.order.name}': kept out of the line of fire of {', '.join(sorted(names)) or 'your guns'} "
                     f"({moved} place(s) moved beside it, {detoured} route(s) led around it)")
+            if zoned:
+                self.plan_warnings.append(
+                    f"group '{gr.order.name}': {zoned} place(s) were closer than {self.gun_zone_m:.0f} m to your own guns "
+                    "and were moved out - keep every unit at least that far from your guns")
 
     def _attack_route(self, gr: GroupRun, g: GroupOrder, units: list[Unit], w: World) -> None:
         """attack mit Wegpunkten (Umfassung, Flankenangriff): jede Einheit laeuft erst die Wegpunkte ab - versetzt um
@@ -272,15 +289,26 @@ class Executor:
                         base_d, base_l = fr.depth(pos), fr.lateral(pos)
                         half = frontage_m(ru.role, ru.men) / 2
                 face = g.facing_deg if g.facing_deg is not None else fr.face
-                lat = base_l + (g.right_m + (half if g.right_m > 0 else -half) if g.right_m else 0.0)
-                anchor = fr.point(base_d - g.back_m, lat)
                 units = [mine[u] for u in members[gi]]
-                if g.shape == "line" and len(units) > 1 and g.attach != "centre":
+                if g.keep_side:
+                    # "auf Hoehe von X": nur die Tiefe von der Referenz, seitlich bleibt die Gruppe, wo sie steht
+                    # right_m wird ignoriert: das Modell rechnete trotz keep_side Seitenabstaende hinzu (-110 m)
+                    lat = sum(fr.lateral(u.pos) for u in units) / len(units)
+                else:
+                    lat = base_l + (g.right_m + (half if g.right_m > 0 else -half) if g.right_m else 0.0)
+                anchor = fr.point(base_d - g.back_m, lat)
+                if g.shape == "line" and len(units) > 1 and g.attach != "centre" and not g.keep_side:
                     width = sum(frontage_m(u.role, u.men) for u in units) + g.spacing_m * (len(units) - 1)
                     rx, rz = _right(face)
                     s = width / 2 if g.attach == "left_end" else -width / 2
                     anchor = (anchor[0] + rx * s, anchor[1] + rz * s)
-                finals = self._formation(units, anchor, face, g.shape, g.spacing_m)
+                if g.keep_side:
+                    # "auf Hoehe von X": jede Einheit geht gerade vor/zurueck und behaelt ihre eigene Seitenlage (keine
+                    # neue Formation - sonst liefen bei shape "none" alle auf einen Punkt)
+                    depth = base_d - g.back_m
+                    finals = {u.id: fr.point(depth, fr.lateral(u.pos)) for u in units}
+                else:
+                    finals = self._formation(units, anchor, face, g.shape, g.spacing_m)
                 planned.update(finals)
                 out[gi] = (anchor, face, finals)
                 todo.remove(gi)
@@ -384,14 +412,22 @@ class Executor:
         self.cease_fire.discard(u.id)
         return want
 
-    def _sidestep(self, u: Unit, want: tuple, g: "GroupRun", ls: list) -> tuple:
-        """Einheit, die halten soll, steht im Schusskanal eines eigenen Feldgeschuetzes: seitlich heraustreten."""
+    def _sidestep(self, u: Unit, want: tuple, g: "GroupRun", ls: list, w: World | None = None) -> tuple:
+        """Einheit, die halten soll, steht im Schusskanal eines eigenen Feldgeschuetzes oder in der Sperrzone um ein
+        eigenes Geschuetz: heraustreten."""
         if want[0] != "halt" or u.role == "artillery":
             return want
         for l in firelanes.in_lanes(u, ls):
             p = l.exit_point(u.pos)
             g.places[u.id] = p
             return ("goto", p, False)
+        if w is not None and self.gun_zone_m > 0:
+            fr = w.frame(self.alliance)
+            q = firelanes.zone_push(u.pos, firelanes.guns(w, self.alliance), self.gun_zone_m,
+                                    (-fr.fwd[0], -fr.fwd[1]) if fr else None)
+            if q is not None:
+                g.places[u.id] = q
+                return ("goto", q, False)
         return want
 
     # ---------- jede Sekunde ----------
@@ -411,7 +447,7 @@ class Executor:
                 if want is None:
                     continue
                 want = self._artillery_safety(u, want, w)
-                want = self._sidestep(u, want, g, ls)
+                want = self._sidestep(u, want, g, ls, w)
                 orders += self._limber(u, want, w)
                 if self._should_issue(u, want, w):
                     o = self._to_order(u, want, w)

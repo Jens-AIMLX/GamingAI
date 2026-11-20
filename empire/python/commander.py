@@ -292,7 +292,7 @@ class Side:
         report = describe(w, self.alliance, previous=self.ex.plan, notes=self.notes, tasks=self.ex.tasks(w),
                           reflex_status=self.ex.reflex_status(), losses=losses,
                           errors=self.ex.errors[-5:] + self.ex.plan_warnings, immediate=self.immediate,
-                          lanes=self.ex.lanes if self.ex.plan is not None else None)
+                          lanes=self.ex.lanes if self.ex.plan is not None else None, gun_zone=self.ex.gun_zone_m)
         self.last_men = men
         self.last_pos = {u.id: u.pos for u in w.units.values()}
         self.last_plan_t = w.time
@@ -482,6 +482,9 @@ def main() -> int:
     carry: list[Order] = []
     released_at: dict[str, float] = {}
     lane_warned: dict[tuple[int, int], float] = {}
+    options_path = Path(args.roster).parent / "options.json"     # vom Steuerpult (runtime/options.json)
+    options = {"gun_zone_m": 30.0}
+    options_mtime = 0.0
     while True:
         # Befehle aus Hotkeys und commands.txt
         cmds = [(c, "Datei") for c in read_command_file(cmd_file)]
@@ -528,6 +531,19 @@ def main() -> int:
             for a in w.controlled_alliances:
                 side_for(a)
         orders = list(pending)   # Kopie: orders += ... darf pending nicht veraendern
+        try:                     # Einstellungen aus dem Steuerpult (wirken sofort)
+            mt = options_path.stat().st_mtime
+            if mt != options_mtime:
+                options_mtime = mt
+                new_opts = json.loads(options_path.read_text(encoding="utf-8"))
+                if new_opts.get("gun_zone_m") != options.get("gun_zone_m"):
+                    say(f"[{stamp(w.time)}] Sicherheitsabstand um die eigene Artillerie: "
+                        + (f"{float(new_opts.get('gun_zone_m') or 0):.0f} m" if new_opts.get("gun_zone_m") else "aus"))
+                options.update(new_opts)
+        except (OSError, ValueError):
+            pass
+        for s in sides.values():
+            s.ex.gun_zone_m = float(options.get("gun_zone_m") or 0)
         for a, s in sides.items():
             mine = w.side(a, alive=False)
             s.ex.note_results(w.order_results, {u.bid for u in mine})

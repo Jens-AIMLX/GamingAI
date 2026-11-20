@@ -212,9 +212,25 @@ def lane_lines(w: World, alliance: int, ls: list) -> list[str]:
     return out
 
 
+def zone_lines(w: World, alliance: int, fr, r: float) -> list[str]:
+    """Sperrzone um die eigenen Geschuetze (Steuerpult-Einstellung)."""
+    gs = firelanes.guns(w, alliance)
+    if r <= 0 or not gs:
+        return []
+    where = []
+    for g in gs:
+        if fr is not None:
+            where.append(f"{g.name} [{fr.front - fr.depth(g.pos):.0f} m behind your front, {fr.lateral(g.pos):+.0f} m right]")
+        else:
+            where.append(g.name)
+    return [f"SAFETY ZONE: no unit of yours (also generals and reserves) may stand or pass closer than {r:.0f} m to "
+            "your own guns: " + "; ".join(where) + ". The subordinate moves places that are too close."]
+
+
 def describe(w: World, alliance: int, *, previous: Plan | None, notes: list[str], tasks: dict[int, str],
              reflex_status: list[str], losses: tuple[int, int] | None, errors: list[str],
-             immediate: list[tuple[float, str]] | None = None, lanes: list | None = None) -> str:
+             immediate: list[tuple[float, str]] | None = None, lanes: list | None = None,
+             gun_zone: float = 0.0) -> str:
     mine = sorted(w.side(alliance, alive=False), key=lambda u: u.id)
     foes = sorted(w.enemies(alliance, alive=False), key=lambda u: u.id)
     mine_alive = [u for u in mine if u.alive]
@@ -244,6 +260,7 @@ def describe(w: World, alliance: int, *, previous: Plan | None, notes: list[str]
     lines += _frame_lines(w, alliance, fr)
     lines += position_lines(w, alliance, fr)
     lines += lane_lines(w, alliance, lanes if lanes is not None else firelanes.lanes(w, alliance))
+    lines += zone_lines(w, alliance, fr, gun_zone)
     lines.append("")
     lines.append("YOUR UNITS:")
     lines += ["  " + _unit_line(w, u, foes_alive, tasks.get(u.id), fr) for u in mine]

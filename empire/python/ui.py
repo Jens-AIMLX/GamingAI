@@ -53,6 +53,7 @@ DEFAULT_HOTKEYS = {"deploy": "F9", "sel_ai": "F10", "sel_player": "F11"}
 DEFAULTS = {"model": next(iter(MODELS)), "effort": "low", "interval": 10, "close_interval": 5,
             "strategy": "standard", "strategy_drafts": {}, "orders_player": "", "orders_enemy": "", "deploy_prompt": "",
             "hotkeys": dict(DEFAULT_HOTKEYS), "own_groups": False, "review_baselines": {},
+            "gun_zone_on": True, "gun_zone_m": 30,
             "geometry": "1040x1000"}
 
 
@@ -198,6 +199,17 @@ class App(tk.Tk):
         ttk.Checkbutton(f, text="Overlay im Spiel (Feld unten links im Spielbild, auch im Vollbild; wirkt nach etwa 2 s)",
                         variable=self.overlay_var, command=self._write_control).grid(
             row=4, column=0, columnspan=7, sticky="w", pady=(2, 0))
+        # Sicherheitsabstand um die eigene Artillerie: feste Regel im Feldherrn (wirkt sofort, auch in der Aufstellung)
+        zf = ttk.Frame(f)
+        zf.grid(row=5, column=0, columnspan=7, sticky="w", pady=(2, 0))
+        self.zone_on_var = tk.BooleanVar(value=bool(self.s.get("gun_zone_on", True)))
+        self.zone_m_var = tk.IntVar(value=int(self.s.get("gun_zone_m", 30)))
+        ttk.Checkbutton(zf, text="Sicherheitsabstand um die eigene Artillerie:", variable=self.zone_on_var,
+                        command=self._zone_changed).pack(side="left")
+        ttk.Spinbox(zf, from_=10, to=100, increment=5, width=5, textvariable=self.zone_m_var,
+                    command=self._zone_changed).pack(side="left", padx=4)
+        ttk.Label(zf, text="m (keine Einheit n\u00e4her an einem eigenen Geschütz; wirkt sofort)",
+                  foreground="#777").pack(side="left")
 
         ttk.Label(f, text="Feldherr:").grid(row=1, column=0, sticky="w", pady=(6, 0))
         self.model_var = tk.StringVar(value=self.s["model"] if self.s["model"] in MODELS else DEFAULTS["model"])
@@ -363,11 +375,22 @@ class App(tk.Tk):
         ttk.Label(f, text="Feld rechts neben jedem Button = Hotkey (z. B. F9, Pause, Num5, Strg+Shift+F9). Empire sieht "
                           "jede Taste ebenfalls – Tasten wählen, die das Spiel nicht belegt. Gilt ab dem nächsten Start.",
                   foreground="#777").grid(row=4, column=0, sticky="w", pady=(4, 0))
-        self.log = tk.Text(f, height=10, wrap="word", state="disabled", font=("Consolas", 9), background="#fafafa")
-        self.log.grid(row=2, column=0, sticky="nsew", pady=(6, 0))
-        sb = ttk.Scrollbar(f, command=self.log.yview)
-        sb.grid(row=2, column=1, sticky="ns", pady=(6, 0))
-        self.log["yscrollcommand"] = sb.set
+        # Protokoll in Tabs: "Alles" und sortenreine Ansichten (Plaene je Allianz, Befehle, Meldungen)
+        self.log_nb = ttk.Notebook(f)
+        self.log_nb.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(6, 0))
+        self.log_views: dict[str, tk.Text] = {}
+        for name in overlay_panel.LOG_VIEWS:
+            fr_ = ttk.Frame(self.log_nb)
+            fr_.columnconfigure(0, weight=1)
+            fr_.rowconfigure(0, weight=1)
+            t = tk.Text(fr_, height=10, wrap="word", state="disabled", font=("Consolas", 9), background="#fafafa")
+            t.grid(row=0, column=0, sticky="nsew")
+            sb = ttk.Scrollbar(fr_, command=t.yview)
+            sb.grid(row=0, column=1, sticky="ns")
+            t["yscrollcommand"] = sb.set
+            self.log_nb.add(fr_, text=f"  {name}  ")
+            self.log_views[name] = t
+        self.log = self.log_views["Alles"]
 
     # ---------- Schluessel ----------
     def _refresh_key_status(self) -> None:
@@ -633,6 +656,7 @@ class App(tk.Tk):
                        "deploy_prompt": self.deploy_text.get("1.0", "end").strip(),
                        "hotkeys": {c: v.get().strip() for c, v in self.hotkey_vars.items()},
                        "own_groups": self.own_groups_var.get(),
+                       "gun_zone_on": self.zone_on_var.get(), "gun_zone_m": self._zone_m(),
                        "geometry": self.geometry()})
         return self.s
 
@@ -652,6 +676,24 @@ class App(tk.Tk):
         for name, widget in (("deploy_prompt.txt", self.deploy_text), ("orders_player.txt", self.orders_player_text),
                              ("orders_enemy.txt", self.orders_enemy_text), ("strategy.md", self.strat_text)):
             (RUNTIME / name).write_text(widget.get("1.0", "end").strip() + "\n", encoding="utf-8")
+        self._write_options()
+
+    def _zone_m(self) -> int:
+        try:
+            return max(10, min(100, int(self.zone_m_var.get())))
+        except (tk.TclError, ValueError):
+            return 30
+
+    def _write_options(self) -> None:
+        """runtime/options.json: Einstellungen, die der laufende Feldherr jede Sekunde neu liest."""
+        opts = {"gun_zone_m": self._zone_m() if self.zone_on_var.get() else 0}
+        tmp = RUNTIME / "options.json.tmp"
+        tmp.write_text(json.dumps(opts), encoding="utf-8")
+        os.replace(tmp, RUNTIME / "options.json")
+
+    def _zone_changed(self) -> None:
+        self._write_options()
+        self._schedule_save()
 
     # ---------- Start/Stopp ----------
     def _start(self) -> None:
@@ -789,7 +831,7 @@ class App(tk.Tk):
     def _overlay_data(self) -> "overlay_panel.PanelData":
         model = self.model_var.get().split(" (")[0].replace("Claude ", "")
         control = next((label for label, val in SIDES if val == self.control_var.get()), self.control_var.get())
-        log = self.log.get("end-200l", "end").splitlines()
+        log = self.log_views[self._log_view()].get("end-200l", "end").splitlines()
         units = [tuple(self.units_tree.item(i, "values")) + (i,) for i in self.units_tree.get_children()]
         return overlay_panel.PanelData(
             tab=overlay_panel.TABS[self._ov_view - 1], running=bool(self.proc and self.proc.poll() is None),
@@ -803,7 +845,7 @@ class App(tk.Tk):
             chat_text=self.chat_var.get(), hotkeys={k: v.get() for k, v in self.hotkey_vars.items()},
             control_val=self.control_var.get(), own_groups=self.own_groups_var.get(), plan_s=self.int_var.get(),
             close_s=self.cint_var.get(), selected=tuple(self.units_tree.selection()), scroll=dict(self._ov_scroll),
-            menu_open=self._ov_menu,
+            menu_open=self._ov_menu, log_view=self._log_view(), zone_on=self.zone_on_var.get(), zone_m=self._zone_m(),
             pressed=self._ov_pressed[0] if self._ov_pressed and time.monotonic() - self._ov_pressed[1] < 0.3 else None)
 
     def _overlay_tick(self) -> None:
@@ -960,6 +1002,15 @@ class App(tk.Tk):
         elif k == "m_groups":
             self.own_groups_var.set(not self.own_groups_var.get())
             self._write_control()
+        elif k == "logview":
+            self.log_nb.select(overlay_panel.LOG_VIEWS.index(a[1]))
+            self._ov_scroll["log"] = None
+        elif k == "m_zone_toggle":
+            self.zone_on_var.set(not self.zone_on_var.get())
+            self._zone_changed()
+        elif k == "m_zone":
+            self.zone_m_var.set(max(10, min(100, self._zone_m() + a[1])))
+            self._zone_changed()
         elif k == "m_close_menu":
             self._ov_menu = False
 
@@ -1008,10 +1059,22 @@ class App(tk.Tk):
         os.startfile(HERE / "logs")
 
     def _append(self, text: str) -> None:
-        self.log.config(state="normal")
-        self.log.insert("end", text)
-        self.log.see("end")
-        self.log.config(state="disabled")
+        """Ins Protokoll: jede Zeile nach "Alles" und in ihre Sorte (Plan Allianz 1/2, Befehle, Meldungen)."""
+        for line in text.splitlines(keepends=True):
+            targets = [self.log]
+            if line.strip():
+                targets.append(self.log_views[overlay_panel.log_category(line)])
+            for t in targets:
+                t.config(state="normal")
+                t.insert("end", line)
+                t.see("end")
+                t.config(state="disabled")
+
+    def _log_view(self) -> str:
+        try:
+            return overlay_panel.LOG_VIEWS[self.log_nb.index(self.log_nb.select())]
+        except (tk.TclError, IndexError):
+            return "Alles"
 
     def _on_close(self) -> None:
         if self.proc and self.proc.poll() is None:

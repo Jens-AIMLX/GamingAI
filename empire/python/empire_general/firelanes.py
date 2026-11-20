@@ -137,3 +137,54 @@ def blocking(u: Unit, l: Lane) -> bool:
 
 def in_lanes(u: Unit, ls: list[Lane]) -> list[Lane]:
     return [l for l in ls if blocking(u, l)]
+
+
+# ---------- Sperrzone um die eigenen Geschuetze (alle, auch Moerser) ----------
+# Einheiten muessen immer Abstand zu den eigenen Geschuetzen halten - auch hinter und neben ihnen (Schlacht
+# 2026-11-20 13:54: Generaele liefen mehrfach auf die Position von Artillerie 1). Radius im Steuerpult schaltbar
+# (runtime/options.json, gun_zone_m; 0 = aus).
+
+
+def guns(w: World, alliance: int) -> list[Unit]:
+    return [u for u in w.side(alliance) if u.role == "artillery"]
+
+
+def zone_push(p: tuple[float, float], gs: list[Unit], r: float, away: tuple[float, float] | None = None
+              ) -> tuple[float, float] | None:
+    """Liegt p naeher als r an einem Geschuetz, den Punkt radial auf r + 8 m hinausschieben (sonst None)."""
+    if r <= 0:
+        return None
+    q, moved = p, False
+    for _ in range(3):                       # mehrere Geschuetze nebeneinander
+        hit = next((g for g in gs if dist(q, g.pos) < r), None)
+        if hit is None:
+            break
+        d = dist(q, hit.pos)
+        if d < 1.0:
+            dx, dz = away if away else (1.0, 0.0)
+        else:
+            dx, dz = (q[0] - hit.x) / d, (q[1] - hit.z) / d
+        q = (hit.x + dx * (r + 8.0), hit.z + dz * (r + 8.0))
+        moved = True
+    return q if moved else None
+
+
+def zone_detour(a: tuple[float, float], b: tuple[float, float], gs: list[Unit], r: float
+                ) -> list[tuple[float, float]]:
+    """Fuehrt die Strecke a->b naeher als r an einem Geschuetz vorbei: Wegpunkt seitlich um das Geschuetz herum."""
+    if r <= 0:
+        return []
+    ab = (b[0] - a[0], b[1] - a[1])
+    L2 = ab[0] ** 2 + ab[1] ** 2
+    if L2 < 1.0:
+        return []
+    for g in gs:
+        t = max(0.0, min(1.0, ((g.x - a[0]) * ab[0] + (g.z - a[1]) * ab[1]) / L2))
+        c = (a[0] + ab[0] * t, a[1] + ab[1] * t)
+        if dist(c, g.pos) >= r or dist(a, g.pos) < r or dist(b, g.pos) < r:
+            continue
+        L = L2 ** 0.5
+        nx, nz = -ab[1] / L, ab[0] / L                 # Senkrechte zur Strecke
+        side = 1.0 if (c[0] - g.x) * nx + (c[1] - g.z) * nz >= 0 else -1.0
+        return [(g.x + nx * side * (r + 12.0), g.z + nz * side * (r + 12.0))]
+    return []

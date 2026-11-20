@@ -56,6 +56,8 @@ class GroupOrder(BaseModel):
                                                     "With a unit as ref measured from that unit's side edge")
     attach: Literal["centre", "left_end", "right_end"] = Field(default="centre", description="move with ref: which point "
                                                                "of the group's line is put at the reference point")
+    keep_side: bool = Field(default=False, description="move with ref: the ref only sets the DEPTH; the group keeps its "
+                                                       "current left/right position (right_m is ignored)")
     facing_deg: float | None = Field(default=None, description="move: direction the front faces on arrival (0 = north, 90 = east); "
                                                                "omitted = towards the enemy army")
     shape: Literal["line", "column", "none"] = Field(default="line", description="move: line = side by side across facing_deg, "
@@ -125,6 +127,9 @@ class WireGroup(BaseModel):
                                        "with a unit as ref measured from that unit's side edge (e.g. -5 = 5 m gap on its left); otherwise 0")
     attach: Literal["centre", "left_end", "right_end"] = Field(description="move with ref: which point of the group's "
                                                                            "line is put at the reference point")
+    keep_side: bool = Field(description="move with ref: true = the ref only sets the DEPTH ('auf Hoehe von X' = as far "
+                                        "back as X); the group stays on its side where it stands now (right_m and attach "
+                                        "are ignored - use 0); false = place it next to the ref")
     facing_deg: float = Field(description="move: front direction on arrival, 0 = north, 90 = east; -1 = towards the enemy army")
     shape: Literal["line", "column", "none"]
     spacing_m: float = Field(description="move: gap between units in a line / distance in a column, e.g. 6")
@@ -172,7 +177,7 @@ def to_plan(w: WirePlan) -> Plan:
         groups.append(GroupOrder(
             name=g.name, unit_ids=g.unit_ids, task=g.task, target_point=_pt(g.target_point),
             ref=None if g.ref.strip().lower() in ("", "absolute", "none") else g.ref.strip(),
-            back_m=g.back_m, right_m=g.right_m, attach=g.attach,
+            back_m=g.back_m, right_m=g.right_m, attach=g.attach, keep_side=g.keep_side,
             facing_deg=None if g.facing_deg < 0 else g.facing_deg % 360, shape=g.shape,
             spacing_m=g.spacing_m if g.spacing_m > 0 else 6.0,
             waypoints=[p for p in (_pt(x) for x in g.waypoints) if p] or None,

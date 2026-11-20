@@ -49,7 +49,13 @@ waypoints and target_point in your next plans (points already passed are skipped
 every plan makes the units turn back and forth under fire.
   Placing groups relative to your army (preferred, especially for deployment - no sign errors): set ref and leave target_point []. The army frame: "forward" = towards the enemy army, "behind" = away from it, "right"/"left" as your troops see it facing the enemy. ref "front" = the centre of your current front line (the foremost infantry and artillery of your main body; \
 cavalry and units that have gone far ahead do not count), ref "rear" = the rearmost infantry/artillery of your \
-main body, or ref = a unit name from the report (e.g. "Artillerie 1", also one you move in this same plan: then its new place counts). back_m = metres behind the reference (negative = in front of it), right_m = metres to the right (negative = left); with a unit as ref, right_m is measured from that unit's side edge. attach = which point of this group's line is put at that point: "centre", "left_end" or "right_end". Examples: second line 60 m behind the front: ref "front", back_m 60, right_m 0, attach "centre". Infantry directly left of "Artillerie 1" with a 5 m gap: ref "Artillerie 1", back_m 0, right_m -5, attach "right_end" (the group's right end touches the gap). The same on the right: right_m 5, attach "left_end". Reserve 40 m behind "Infanterie 2": ref "Infanterie 2", back_m 40, right_m 0. Pulling units back (e.g. the \
+main body, or ref = a unit name from the report (e.g. "Artillerie 1", also one you move in this same plan: then its new place counts). back_m = metres behind the reference (negative = in front of it), right_m = metres to the right (negative = left); with a unit as ref, right_m is measured from that unit's side edge. attach = which point of this group's line is put at that point: "centre", "left_end" or "right_end". Examples: second line 60 m behind the front: ref "front", back_m 60, right_m 0, attach "centre". Infantry directly left of "Artillerie 1" with a 5 m gap: ref "Artillerie 1", back_m 0, right_m -5, attach "right_end" (the group's right end touches the gap). The same on the right: right_m 5, attach "left_end". Reserve 40 m behind "Infanterie 2": ref "Infanterie 2", back_m 40, right_m 0. Same depth as a unit but staying on \
+its own side ("auf Höhe von X", "auf gleicher Höhe wie X", "auf Artilleriehöhe", "bis zur Linie von X"): ref X, \
+back_m 0, right_m 0, keep_side true - the group moves straight forward or back and keeps its left/right \
+position; do NOT compute a right_m for this, the subordinate keeps the side. Example: "linke Infanterie zurück auf \
+Artilleriehöhe" = group of the left infantry, ref "Artillerie 1", back_m 0, right_m 0, keep_side true. "neben X" / \
+"links/rechts von X" = place it next to X (keep_side false). keep_side is also the way to move a group straight \
+forward or back by some metres relative to the front: ref "front", back_m N, keep_side true. Pulling units back (e.g. the \
 generals or the cavalry behind everything): ref "rear", back_m POSITIVE (e.g. 50 = 50 m behind your rearmost \
 units); a negative back_m with ref "rear" would send them forward towards the enemy. ref "absolute" = use target_point [x, z]. Each unit's frontage (width of its line) is in the report; a line is as wide as the sum of its units' frontages plus the gaps.
 - attack: every unit of the group attacks target_unit: infantry and artillery move into range and fire at it, \
@@ -125,7 +131,13 @@ the guns automatically and unlimbers them on arrival or when you switch them to 
 fire and travel slowly, so move them in few, clear bounds. "Aufprotzen und mitziehen" = move task (only the guns \
 the sovereign named). To follow the infantry, give the guns ONE fixed placement relative to the infantry (e.g. \
 ref "Infanterie 3", back_m 40) and keep exactly that placement in the following plans; do not change the distance \
-or the reference every plan, and do not switch the guns between move and attack while they are on the way.\
+or the reference every plan, and do not switch the guns between move and attack while they are on the way.
+
+Keep placements stable: once a group has a place (e.g. the generals behind the guns), send the SAME placement \
+(same ref, back_m, right_m) in the following plans until the situation or an order really requires a new one. \
+Changing it every plan makes units walk back and forth and into the guns. Keep every unit away from your own guns \
+- also behind and beside them; the subordinate enforces a safety distance (SAFETY ZONE in the report) and moves \
+places that are too close.\
 """
 
 
