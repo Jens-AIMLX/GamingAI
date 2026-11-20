@@ -125,6 +125,11 @@ def read_config() -> tuple[str, bool, bool]:
         return ("enemy", False, True)
 
 
+
+CAMP_EMPTY = ("Noch kein Lagebericht dieser Sitzung - er entsteht zu Beginn jedes eigenen Zugs und nach dem ersten "
+              "Klick auf der Kampagnenkarte.")
+
+
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
@@ -939,8 +944,7 @@ class App(tk.Tk):
         """Kampagne als Liste (wie die Einheitenliste): Kopfzeile, Ansichtswahl, Liste mit Farben nach Dringlichkeit."""
         tab = ttk.Frame(self.nb, padding=6)
         tab.columnconfigure(0, weight=1)
-        self.camp_header = ttk.Label(tab, text="Noch kein Lagebericht - er entsteht zu Beginn jedes eigenen Zugs auf der "
-                                               "Kampagnenkarte und nach jeder Aktion.", foreground="#777")
+        self.camp_header = ttk.Label(tab, text=CAMP_EMPTY, foreground="#777")
         self.camp_header.grid(row=0, column=0, columnspan=2, sticky="w")
         bar = ttk.Frame(tab)
         bar.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
@@ -962,7 +966,9 @@ class App(tk.Tk):
         self.camp_tree.tag_configure("warn", foreground="#9a6700")
         self.camp_tree.tag_configure("muted", foreground="#888888")
         self._camp_mtime = None
+        self._camp_since = time.time()          # Berichte von vor dem Start des Steuerpults sind alt: nie anzeigen
         self._camp_views: dict = {}
+        self._camp_advice = (None, [])          # Meldungsleiste: "noch kein Lagebericht" statt alter Empfehlungen
         self._camp_header_text = ""
         self._camp_cols = None
         self._camp_turn = None
@@ -1005,14 +1011,17 @@ class App(tk.Tk):
         if not force and key == self._camp_feed_key:
             return
         self._camp_feed_key = key
-        import textwrap
-        urgent = sum(1 for a in advice if a.prio == 1)
-        lines = [f"-Kampagne Zug {turn}: {urgent} dringend, {len(advice) - urgent} weitere Empfehlungen (F8)"]
-        for a in advice[:5]:
-            kind = {1: "!", 2: "*"}.get(a.prio, "-")
-            parts = textwrap.wrap(f"{a.area}: {a.text}", 74)[:2] or [""]
-            lines.append(kind + parts[0])
-            lines += [kind + " " + q for q in parts[1:]]
+        if turn is None:                                 # kein Bericht dieser Sitzung
+            lines = ["-Kampagne: noch kein Lagebericht dieser Sitzung (Zugbeginn oder erster Klick auf der Karte)"]
+        else:
+            import textwrap
+            urgent = sum(1 for a in advice if a.prio == 1)
+            lines = [f"-Kampagne Zug {turn}: {urgent} dringend, {len(advice) - urgent} weitere Empfehlungen (F8)"]
+            for a in advice[:5]:
+                kind = {1: "!", 2: "*"}.get(a.prio, "-")
+                parts = textwrap.wrap(f"{a.area}: {a.text}", 74)[:2] or [""]
+                lines.append(kind + parts[0])
+                lines += [kind + " " + q for q in parts[1:]]
         tmp = d / "overlay.txt.tmp"
         try:
             tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -1040,6 +1049,11 @@ class App(tk.Tk):
         try:
             mt = path.stat().st_mtime
         except OSError:
+            mt = None                           # vom Spiel beim Laden verworfen
+        if mt is not None and mt < self._camp_since:
+            mt = None                           # aus einer frueheren Sitzung
+        if mt is None:
+            self._campaign_clear()
             return
         if not force and mt == self._camp_mtime:
             return
@@ -1061,6 +1075,19 @@ class App(tk.Tk):
             urgent = sum(1 for a in advice if a.prio == 1)
             self._append(f"Kampagne: Zug {m.get('turn')} - {urgent} dringende von {len(advice)} Empfehlungen "
                          "(Tab „Kampagne“)\n")
+
+    def _campaign_clear(self) -> None:
+        """Kein aktueller Bericht: Liste, Kopfzeile und Empfehlungen leeren (Steuerpult und Overlay)."""
+        if self._camp_mtime is None and not self._camp_views:
+            return
+        self._camp_mtime = None
+        self._camp_views = {}
+        self._camp_header_text = ""
+        self._camp_advice = (None, [])
+        self._camp_turn = None
+        self.camp_tree.delete(*self.camp_tree.get_children())
+        self.camp_header.config(text=CAMP_EMPTY, foreground="#777")
+        self._campaign_feed()
 
     def _campaign_show(self) -> None:
         """Gewaehlte Ansicht in die Liste: Spalten nur beim Ansichtswechsel neu, Zeilen an Ort und Stelle (Auswahl und

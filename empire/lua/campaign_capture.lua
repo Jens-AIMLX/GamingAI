@@ -15,6 +15,9 @@ do
 		if f then f:close(); return true end
 		return false
 	end
+	-- Neue Sitzung (Kampagne geladen/Spiel neu gestartet): Bericht der vorigen Sitzung verwerfen - Steuerpult und Overlay
+	-- zeigen nie alte Daten, sondern bleiben leer bis zur ersten Erfassung (Zugbeginn oder erster Klick)
+	pcall(os.remove, P .. "campaign_state.json")
 
 	-- Fehler der Erfassung sichtbar machen: ai_bridge/campaign_capture.error (neueste zuerst ueberschrieben) und
 	-- empire_bridge_log.txt
