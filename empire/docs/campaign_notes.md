@@ -122,3 +122,5 @@ Bauschlange: kein Feld in den Slots gefunden (es war nichts im Bau?) – die Erf
 1. Spieltest der Erfassung; Laufzeit je Schritt prüfen (`steps` im JSON).
 2. Stufe 2: Claude-Berater auf Basis des Lageberichts; Overlay-Tab „Kampagne“ (DLL im Kampagnen-Lua laden).
 3. Erste Handlungen (Forschung, Bau, Rekrutierung, Steuern), einzeln und abschaltbar.
+
+- **Timer nie beim Laden stellen:** `add_time_trigger` in WorldCreated/NewSession/UICreated liess Empire 2 s nach Ladebeginn abstuerzen (c0000005, Empire.exe+0x1D54A9). Die Originalskripte stellen Timer nur ab Zugbeginn oder bei Eingaben - der Takt der Erfassung ebenso (erster Klick nach dem Laden startet ihn).

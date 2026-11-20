@@ -419,10 +419,12 @@ do
 			if ok_local and is_local then run("turn") end
 		end)
 		-- Takt: Spiel-Timer (einmalig, im Handler neu gestellt); arbeitet Aktionen und den Knopf im Steuerpult/Overlay
-		-- (ai_bridge/campaign_request.txt) ab. Nach dem Laden lief er erst ab dem naechsten Zugbeginn (2026-11-20 23:1x)
-		-- - beim Laden gestellte Timer gehen offenbar verloren. Deshalb wird er bei NewSession, UICreated, WorldCreated,
-		-- Zugbeginn und bei Aktionen (wenn seit 3 s kein Tick kam) neu gestellt. Jedes Stellen bekommt einen eigenen
-		-- Namen; nur der zuletzt gestellte zaehlt - eine aeltere Kette laeuft aus, es laufen nie zwei parallel.
+		-- (ai_bridge/campaign_request.txt) ab. Gestellt wird er NUR beim Zugbeginn und bei Eingaben des Spielers
+		-- (Klick, Auswahl, Fenster) - wie in den Originalskripten. Beim Laden gestellt (WorldCreated/NewSession/
+		-- UICreated) stuerzte Empire 2 s nach Ladebeginn ab (2026-11-20 23:41, c0000005 bei Empire.exe+0x1D54A9).
+		-- Nach dem Laden mitten im Zug startet ihn also der erste Klick; sein erster Tick erfasst dann voll ("load").
+		-- Jedes Stellen bekommt einen eigenen Namen; nur der zuletzt gestellte zaehlt - eine aeltere Kette laeuft
+		-- aus, es laufen nie zwei parallel; bei einer Eingabe ohne Tick seit 3 s wird neu gestellt.
 		local TICK = "empire_bridge_tick_"
 		local tick_seq, tick_name, tick_seen = 0, nil, -1e9
 		local function arm()
@@ -435,11 +437,17 @@ do
 		local dirty_at = nil
 		local function mark()
 			dirty_at = os.time()
-			if os.time() - tick_seen > 3 then arm() end      -- Takt tot? neu stellen
 		end
-		for _, name in ipairs({ "HudRefresh", "ComponentLClickUp", "PanelClosedCampaign", "CharacterSelected",
-		                        "SettlementSelected", "FortSelected", "UnitSelectedCampaign", "MovementPointsExhausted",
-		                        "MultiTurnMove", "BuildingConstructionIssuedByPlayer", "RecruitmentItemIssuedByPlayer",
+		local function input()                                -- Eingabe des Spielers: merken und Takt sicherstellen
+			dirty_at = os.time()
+			if os.time() - tick_seen > 3 then arm() end      -- Takt tot oder noch nie gelaufen? neu stellen
+		end
+		for _, name in ipairs({ "ComponentLClickUp", "PanelClosedCampaign", "CharacterSelected", "SettlementSelected",
+		                        "FortSelected", "UnitSelectedCampaign" }) do
+			pcall(es.AddEventCallBack, name, input)
+		end
+		for _, name in ipairs({ "HudRefresh", "MovementPointsExhausted", "MultiTurnMove",
+		                        "BuildingConstructionIssuedByPlayer", "RecruitmentItemIssuedByPlayer",
 		                        "CampaignArmiesMerge", "CharacterCompletedBattle", "SettlementOccupied",
 		                        "GarrisonResidenceCaptured", "UnitTrained", "BuildingCompleted", "ResearchCompleted" }) do
 			pcall(es.AddEventCallBack, name, mark)
@@ -469,12 +477,9 @@ do
 			end)
 			arm()
 		end)
-		for _, name in ipairs({ "NewSession", "UICreated", "WorldCreated", "FactionTurnStart" }) do
-			pcall(es.AddEventCallBack, name, function() arm() end)
-		end
 		pcall(es.AddEventCallBack, "FactionTurnStart", function(context)    -- Zugbeginn erfasst selbst
 			local ok_local, is_local = pcall(function() return conditions.FactionIsLocal(context) end)
-			if ok_local and is_local then need_initial = false end
+			if ok_local and is_local then need_initial = false; arm() end
 		end)
 	end
 end
