@@ -376,6 +376,50 @@ do
 		end
 		step("armeeinhalt", function() contents(raw_armies, S.armies or {}) end)
 		step("flotteninhalt", function() contents(raw_navies, S.navies or {}) end)
+		-- Handel (government_screens: TradeInfo()): Herkunftsgebiete (supply_theatres[i] mit supply_goods[i]) und
+		-- Handelspartner (trade_factions[i] mit trade_goods[i]); je Ware Wert, davon blockiert/ueberfallen; Preise
+		step("handel", function()
+			local t = C.TradeInfo()
+			if type(t) ~= "table" then return end
+			local function routes(names, goods)
+				local r = {}
+				for i = 1, (type(names) == "table" and #names or 0) do
+					local e = pick(names[i], { "entry_name", "route_type", "percent_pilfered" })
+					e.goods = {}
+					local gl = type(goods) == "table" and goods[i] or nil
+					for j = 1, (type(gl) == "table" and #gl or 0) do
+						e.goods[#e.goods + 1] = pick(gl[j], { "tooltip", "value", "value_blockaded", "value_raided" })
+					end
+					r[#r + 1] = e
+				end
+				return r
+			end
+			S.trade = { sources = routes(t.supply_theatres, t.supply_goods),
+			            partners = routes(t.trade_factions, t.trade_goods), prices = {}, price_changes = {} }
+			for k, v in pairs(type(t.prices) == "table" and t.prices or {}) do
+				if scalar(v) then S.trade.prices[tostring(k)] = v end
+			end
+			for k, v in pairs(type(t.price_changes) == "table" and t.price_changes or {}) do
+				if scalar(v) then S.trade.price_changes[tostring(k)] = v end
+			end
+		end)
+		-- Missionen (missions: MissionsDetails()): aktive und abgelaufene; Felder noch unbekannt (bisher leer) -
+		-- alle einfachen Felder je Mission uebernehmen
+		step("missionen", function()
+			local m = C.MissionsDetails()
+			S.missions = { active = {}, expired = {} }
+			if type(m) ~= "table" then return end
+			for src, dst in pairs({ active_missions = "active", expired_missions = "expired" }) do
+				local lst = m[src]
+				for _, e in pairs(type(lst) == "table" and lst or {}) do
+					if type(e) == "table" then
+						local r = {}
+						for k, v in pairs(e) do if type(k) == "string" and scalar(v) then r[k] = v end end
+						S.missions[dst][#S.missions[dst] + 1] = r
+					end
+				end
+			end
+		end)
 		step("agenten", function()
 			S.agents = characters(C.RetrieveFactionAgentsList(pid))
 		end)

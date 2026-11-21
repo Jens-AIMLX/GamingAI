@@ -957,10 +957,22 @@ class App(tk.Tk):
         self.camp_fog_var = tk.BooleanVar(value=bool(self.s.get("campaign_fog", False)))
         ttk.Checkbutton(bar, text="Nebel einbeziehen (Spezialschalter)", variable=self.camp_fog_var,
                         command=self._campaign_fog_changed).pack(side="right", padx=12)
+        # Filter und Sortierung (gelten auch fuer das Overlay): Suchtext ueber alle Spalten, "nur wichtige",
+        # Sortierung per Klick auf die Spaltenueberschrift (zweiter Klick kehrt um, dritter hebt auf)
+        fbar = ttk.Frame(tab)
+        fbar.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        ttk.Label(fbar, text="Filter:").pack(side="left")
+        self.camp_filter_var = tk.StringVar(value="")
+        ttk.Entry(fbar, textvariable=self.camp_filter_var, width=28).pack(side="left", padx=(4, 12))
+        self.camp_filter_var.trace_add("write", lambda *_: self._campaign_show())
+        self.camp_important_var = tk.BooleanVar(value=bool(self.s.get("campaign_important", False)))
+        ttk.Checkbutton(fbar, text="nur dringende und wichtige", variable=self.camp_important_var,
+                        command=self._campaign_important_changed).pack(side="left")
+        self._camp_sort: dict[str, tuple[int, bool]] = {}
         self.camp_tree = ttk.Treeview(tab, show="headings", height=9, selectmode="extended")
-        self.camp_tree.grid(row=2, column=0, sticky="nsew", pady=(6, 0))
+        self.camp_tree.grid(row=3, column=0, sticky="nsew", pady=(6, 0))
         sb = ttk.Scrollbar(tab, command=self.camp_tree.yview)
-        sb.grid(row=2, column=1, sticky="ns", pady=(6, 0))
+        sb.grid(row=3, column=1, sticky="ns", pady=(6, 0))
         self.camp_tree["yscrollcommand"] = sb.set
         self.camp_tree.bind("<<TreeviewSelect>>", self._campaign_select)
         self.camp_tree.tag_configure("urgent", foreground="#b00020")
@@ -1106,6 +1118,47 @@ class App(tk.Tk):
         self.camp_header.config(text=CAMP_EMPTY, foreground="#777")
         self._campaign_feed()
 
+    @staticmethod
+    def _camp_sortkey(text) -> tuple:
+        """Zahlen als Zahlen sortieren ("12.345", "55 %", "-3 / 2"), sonst Text."""
+        t = str(text).strip()
+        m = re.search(r"-?\d+(?:,\d+)?", t.replace(".", ""))
+        if m:
+            return (0, float(m.group(0).replace(",", ".")), t.lower())
+        return (1, 0.0, t.lower())
+
+    def _camp_rows(self, v) -> list:
+        """Zeilen einer Ansicht nach Filter (Text, nur wichtige) und Sortierung - fuer Steuerpult und Overlay gleich."""
+        rows = list(v.rows)
+        q = self.camp_filter_var.get().strip().lower()
+        if q:
+            rows = [r for r in rows if q in " ".join(str(c) for c in r[1]).lower()]
+        if self.camp_important_var.get():
+            rows = [r for r in rows if v.tags.get(r[0]) in ("urgent", "warn")
+                    or (self.camp_view_var.get() == "Empfehlungen" and v.tags.get(r[0]) != "muted")]
+        srt = self._camp_sort.get(self.camp_view_var.get())
+        if srt:
+            col, desc = srt
+            rows.sort(key=lambda r: self._camp_sortkey(r[1][col] if col < len(r[1]) else ""), reverse=desc)
+        return rows
+
+    def _campaign_sort(self, col: int) -> None:
+        """Klick auf eine Spaltenueberschrift: aufsteigend -> absteigend -> unsortiert (Reihenfolge des Berichts)."""
+        view = self.camp_view_var.get()
+        cur = self._camp_sort.get(view)
+        if cur is None or cur[0] != col:
+            self._camp_sort[view] = (col, False)
+        elif not cur[1]:
+            self._camp_sort[view] = (col, True)
+        else:
+            self._camp_sort.pop(view, None)
+        self._campaign_show()
+
+    def _campaign_important_changed(self) -> None:
+        self.s["campaign_important"] = bool(self.camp_important_var.get())
+        self._schedule_save()
+        self._campaign_show()
+
     def _campaign_show(self) -> None:
         """Gewaehlte Ansicht in die Liste: Spalten nur beim Ansichtswechsel neu, Zeilen an Ort und Stelle (Auswahl und
         Bildlauf bleiben)."""
@@ -1118,15 +1171,20 @@ class App(tk.Tk):
             tree.delete(*tree.get_children())
             ids = [f"c{i}" for i in range(len(cols))]
             tree["columns"] = ids
-            for cid, (label, rel) in zip(ids, v.columns):
-                tree.heading(cid, text=label)
+            for i, (cid, (label, rel)) in enumerate(zip(ids, v.columns)):
+                tree.heading(cid, text=label, command=lambda i=i: self._campaign_sort(i))
                 tree.column(cid, width=int(rel * 9), anchor="w")
             self._camp_cols = cols
-        keep = {k for k, _ in v.rows}
+        srt = self._camp_sort.get(self.camp_view_var.get())
+        for i, (label, _) in enumerate(v.columns):          # Pfeil an der sortierten Spalte
+            arrow = (" ▼" if srt[1] else " ▲") if srt and srt[0] == i else ""
+            tree.heading(f"c{i}", text=label + arrow)
+        rows = self._camp_rows(v)
+        keep = {k for k, _ in rows}
         for iid in tree.get_children():
             if iid not in keep:
                 tree.delete(iid)
-        for i, (key, cells) in enumerate(v.rows):
+        for i, (key, cells) in enumerate(rows):
             tag = v.tags.get(key) or ""
             if tree.exists(key):
                 if tuple(tree.item(key, "values")) != tuple(cells):
@@ -1160,9 +1218,11 @@ class App(tk.Tk):
             if self.camp_view_var.get() in self._camp_views else (),
             camp_rows=tuple((cells, self._camp_views[self.camp_view_var.get()].tags.get(k, ""), k,
                              bool(self._camp_views[self.camp_view_var.get()].targets.get(k)))
-                            for k, cells in self._camp_views[self.camp_view_var.get()].rows)
+                            for k, cells in self._camp_rows(self._camp_views[self.camp_view_var.get()]))
             if self.camp_view_var.get() in self._camp_views else (),
             camp_fog=bool(self.camp_fog_var.get()), camp_sel=tuple(self.camp_tree.selection()),
+            camp_sort=self._camp_sort.get(self.camp_view_var.get()), camp_important=bool(self.camp_important_var.get()),
+            camp_filter=self.camp_filter_var.get().strip(),
             focus=self._ov_focus, caret=self._ov_caret, review=self._ov_review_data(),
             width=self._ov_geom()[2], height=self._ov_geom()[3])
 
@@ -1424,6 +1484,11 @@ class App(tk.Tk):
         elif k == "m_effort":
             self.effort_var.set(a[1])
             self._schedule_save()
+        elif k == "camp_sort":                              # Kampagne: Spaltenkopf im Overlay -> sortieren
+            self._campaign_sort(a[1])
+        elif k == "camp_important":                         # Kampagne: nur dringende und wichtige
+            self.camp_important_var.set(not self.camp_important_var.get())
+            self._campaign_important_changed()
         elif k == "camp_row":                               # Kampagne: Zeilenklick im Overlay -> Kamera
             tree = self.camp_tree
             if tree.exists(a[1]):

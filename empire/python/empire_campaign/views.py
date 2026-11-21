@@ -8,7 +8,8 @@ from dataclasses import dataclass, field
 from .report import (FULL_STACK, PRIO_NAME, _dict, _list, _money, _num, enemy_armies, finances, order_totals,
                      recommendations, strength, target_pos, target_region, target_slot)
 
-VIEWS = ["Empfehlungen", "Militär", "Regionen", "Bauplätze", "Forschung", "Feinde", "Diplomatie"]
+VIEWS = ["Empfehlungen", "Militär", "Regionen", "Bauplätze", "Forschung", "Feinde", "Diplomatie", "Handel",
+         "Missionen"]
 
 
 @dataclass
@@ -195,7 +196,44 @@ def _diplomacy(st: dict) -> View:
     return View([("Fraktion", 26), ("Status", 14), ("Haltung", 20), ("Wert", 10), ("Regierung", 30)], rows, tags)
 
 
+def _trade(st: dict) -> View:
+    """Je Ware eine Zeile: Herkunftsgebiet bzw. Handelspartner, Ware (Text des Spiels), Wert, davon blockiert/ueberfallen."""
+    rows, tags = [], {}
+    t = _dict(st.get("trade"))
+    for kind, label in (("sources", "Gebiet"), ("partners", "Partner")):
+        for i, r in enumerate(_list(t.get(kind))):
+            pil = _num(r.get("percent_pilfered"))
+            for j, g in enumerate(_list(r.get("goods"))):
+                key = f"tr:{kind}:{i}:{j}"
+                blk, raid = _num(g.get("value_blockaded")), _num(g.get("value_raided"))
+                rows.append((key, (label, str(r.get("entry_name", "")), str(g.get("tooltip", "")), _n(g.get("value")),
+                                   _n(blk) if blk else "", _n(raid) if raid else "",
+                                   f"{pil:.0f} %" if pil else "")))
+                if blk or raid or pil:
+                    tags[key] = "urgent" if (blk + raid) >= 0.25 * max(_num(g.get("value")), 1) else "warn"
+    return View([("Art", 8), ("Gebiet/Partner", 22), ("Ware", 30), ("Wert", 10), ("blockiert", 10),
+                 ("überfallen", 10), ("Piraterie", 10)], rows, tags)
+
+
+def _missions(st: dict) -> View:
+    """Missionen: Felder kommen ungeprueft aus dem Spiel - Name/Beschreibung/Frist, soweit vorhanden."""
+    rows, tags = [], {}
+    m = _dict(st.get("missions"))
+    for state, label in (("active", "aktiv"), ("expired", "abgelaufen")):
+        for i, e in enumerate(_list(m.get(state))):
+            name = next((str(e[k]) for k in ("Name", "Title", "name", "title", "Key", "key") if e.get(k)), "?")
+            desc = next((str(e[k]) for k in ("Description", "description", "Objective", "objective", "Tooltip")
+                         if e.get(k)), "")
+            turns = next((str(e[k]) for k in ("TurnsRemaining", "turns_remaining", "Turns", "turns", "Duration")
+                          if e.get(k) not in (None, "")), "")
+            key = f"mis:{state}:{i}"
+            rows.append((key, (label, name, desc, turns)))
+            if state == "expired":
+                tags[key] = "muted"
+    return View([("Status", 10), ("Mission", 30), ("Ziel", 48), ("Züge", 10)], rows, tags)
+
+
 def build(st: dict, include_fog: bool = False) -> dict[str, View]:
     return {"Empfehlungen": _recommendations(st, include_fog), "Militär": _military(st), "Regionen": _regions(st),
             "Bauplätze": _buildings(st), "Forschung": _research(st), "Feinde": _enemies(st, include_fog),
-            "Diplomatie": _diplomacy(st)}
+            "Diplomatie": _diplomacy(st), "Handel": _trade(st), "Missionen": _missions(st)}

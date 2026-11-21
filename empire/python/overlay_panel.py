@@ -110,6 +110,9 @@ class PanelData:
     camp_rows: tuple = ()                                  # ((Zellen...), Hervorhebung), ...
     camp_fog: bool = False                                 # Spezialschalter: Feinde im Nebel einbeziehen
     camp_sel: tuple = ()                                   # markierte Zeile(n) (Schluessel)
+    camp_sort: tuple | None = None                         # (Spalte, absteigend) der aktuellen Ansicht
+    camp_important: bool = False                           # nur dringende und wichtige Zeilen
+    camp_filter: str = ""                                  # Suchtext (im Steuerpult eingegeben)
     width: int = 560                                       # Groesse des Overlays (mit der Maus aenderbar)
     height: int = 360
 
@@ -474,7 +477,8 @@ def render(p: PanelData) -> tuple[Image.Image, list[Hot]]:
 
 
 CAMP_SHORT = {"Empfehlungen": "Empfehl.", "Militär": "Militär", "Regionen": "Regionen", "Bauplätze": "Bauten",
-              "Forschung": "Forschung", "Feinde": "Feinde", "Diplomatie": "Diplom."}
+              "Forschung": "Forschung", "Feinde": "Feinde", "Diplomatie": "Diplom.", "Handel": "Handel",
+              "Missionen": "Missionen"}
 CAMP_TAG_COLOR = {"urgent": ORANGE, "warn": GOLD, "muted": MUTED}
 
 
@@ -493,16 +497,21 @@ def _campaign(pt: Painter, top: int, bottom_y: int) -> None:
     f10, f11 = font(10), font(11)
     x = W - 12
     for label, action, accent in (("Aktualisieren", ("camp_refresh",), False),
-                                  ("Nebel: einbezogen" if p.camp_fog else "Nebel: aus", ("camp_fog",), p.camp_fog)):
+                                  ("Nebel: einbezogen" if p.camp_fog else "Nebel: aus", ("camp_fog",), p.camp_fog),
+                                  ("Nur wichtige", ("camp_important",), p.camp_important)):
         x -= int(font(11, True).getlength(label)) + 14
         pt.button(x, top - 2, label, action, accent=accent)
         x -= 6
     head = p.camp_header or "Noch kein Lagebericht - er entsteht zu Beginn jedes eigenen Zugs und nach jeder Aktion."
+    if p.camp_filter:
+        head = f"Filter „{p.camp_filter}“ · " + head
     d.text((12, top + 1), _fit(head, f10, x - 18), font=f10, fill=GREEN if p.camp_header else MUTED)
-    bx = 12
-    for name in CAMP_SHORT:
-        bx = pt.button(bx, top + 22, CAMP_SHORT[name], ("camp_view", name), accent=p.camp_view == name) - 2
-    y0, y1 = top + 46, bottom_y - 4
+    bx, by = 12, top + 22
+    for name in CAMP_SHORT:                     # Ansichten; bei schmalem Overlay in eine zweite Zeile umbrechen
+        if bx + int(font(11, True).getlength(CAMP_SHORT[name])) + 14 > W - 12 and bx > 12:
+            bx, by = 12, by + 23
+        bx = pt.button(bx, by, CAMP_SHORT[name], ("camp_view", name), accent=p.camp_view == name) - 2
+    y0, y1 = by + 24, bottom_y - 4
     d.rectangle((12, y0, W - 12, y1), fill=PANEL, outline=EDGE)
     cols = list(p.camp_cols)
     if not cols:
@@ -514,8 +523,11 @@ def _campaign(pt: Painter, top: int, bottom_y: int) -> None:
     for _, w in cols:
         xs.append((cx, avail * w / total))
         cx += avail * w / total
-    for (label, _), (cx, cw) in zip(cols, xs):
+    for i, ((label, _), (cx, cw)) in enumerate(zip(cols, xs)):
+        if p.camp_sort and p.camp_sort[0] == i:
+            label += " ▼" if p.camp_sort[1] else " ▲"
         d.text((cx, y0 + 2), _fit(label, font(11, True), cw - 6), font=font(11, True), fill=GOLD)
+        pt.hots.append(Hot(int(cx), y0, int(cx + cw), y0 + 18, ("camp_sort", i)))   # Klick: sortieren
     rows = list(p.camp_rows)
     visible = max((y1 - y0 - 22) // LINE_H, 1)
     maxfirst = max(len(rows) - visible, 0)

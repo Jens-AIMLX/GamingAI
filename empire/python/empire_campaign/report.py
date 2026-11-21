@@ -389,6 +389,25 @@ def recommendations(st: dict, include_fog: bool = False) -> list[Advice]:
             A.append(Advice(2, "Militär", f"Feindarmee {e.get('Name')} ({e.get('faction')}, {int(_num(e.get('Soldiers')))} "
                             f"Soldaten) nahe eigener Truppen bei {loc}" + ("" if e["visible"] else " [im Nebel]"),
                             "", target_pos(e)))
+    # Handel: blockierte/ueberfallene Waren, Piraterie je Gebiet/Partner
+    tr = _dict(st.get("trade"))
+    for kind, label in (("sources", "Handelsgebiet"), ("partners", "Handel mit")):
+        for r in _list(tr.get(kind)):
+            goods = _list(r.get("goods"))
+            total = sum(_num(g.get("value")) for g in goods)
+            lost = sum(_num(g.get("value_blockaded")) + _num(g.get("value_raided")) for g in goods)
+            pil = _num(r.get("percent_pilfered"))
+            if lost > 0:
+                A.append(Advice(1 if lost >= 0.25 * max(total, 1) else 2, "Handel",
+                                f"{label} {r.get('entry_name')}: {_money(lost)} von {_money(total)} blockiert oder überfallen",
+                                "Flotte schicken, Blockade brechen, Handelsweg sichern"))
+            elif pil > 0:
+                A.append(Advice(2, "Handel", f"{label} {r.get('entry_name')}: {pil:.0f} % Piraterie",
+                                "Kriegsschiffe zum Schutz der Handelsflotte"))
+    # Missionen
+    for e in _list(_dict(st.get("missions")).get("active")):
+        name = next((str(e[k]) for k in ("Name", "Title", "name", "title", "Key", "key") if e.get(k)), "?")
+        A.append(Advice(3, "Mission", f"Mission aktiv: {name}", "Belohnung bei Erfüllung - Frist beachten"))
     # Ereignisse
     ev = _dict(st.get("events"))
     for key, prio, text in (("RegionRebels", 1, "Aufstand in einer eigenen Region"),
