@@ -976,6 +976,7 @@ class App(tk.Tk):
         self.camp_important_var = tk.BooleanVar(value=bool(self.s.get("campaign_important", False)))
         ttk.Checkbutton(fbar, text="nur dringende und wichtige", variable=self.camp_important_var,
                         command=self._campaign_important_changed).pack(side="left")
+        ttk.Button(fbar, text="Kopieren", command=self._campaign_copy).pack(side="right")
         self._camp_sort: dict[str, tuple[int, bool]] = {}
         self.camp_tree = ttk.Treeview(tab, show="headings", height=9, selectmode="extended")
         self.camp_tree.grid(row=3, column=0, sticky="nsew", pady=(6, 0))
@@ -983,9 +984,15 @@ class App(tk.Tk):
         sb.grid(row=3, column=1, sticky="ns", pady=(6, 0))
         self.camp_tree["yscrollcommand"] = sb.set
         self.camp_tree.bind("<<TreeviewSelect>>", self._campaign_select)
+        self.camp_tree.bind("<Control-c>", lambda e: self._campaign_copy())
+        menu = tk.Menu(self.camp_tree, tearoff=0)
+        menu.add_command(label="Markierte Zeilen kopieren", command=self._campaign_copy)
+        menu.add_command(label="Ganze Ansicht kopieren", command=lambda: self._campaign_copy(whole=True))
+        self.camp_tree.bind("<Button-3>", lambda e: menu.tk_popup(e.x_root, e.y_root))
         self.camp_tree.tag_configure("urgent", foreground="#b00020")
         self.camp_tree.tag_configure("warn", foreground="#9a6700")
         self.camp_tree.tag_configure("muted", foreground="#888888")
+        self.camp_tree.tag_configure("link", foreground="#1a5fb4", font=("Segoe UI", 9, "underline"))   # anklickbar
         self._camp_mtime = None
         self._camp_since = time.time()          # Berichte von vor dem Start des Steuerpults sind alt: nie anzeigen
         self._camp_views: dict = {}
@@ -1022,6 +1029,25 @@ class App(tk.Tk):
             (d / "campaign_zoom.txt").write_text(target + "\n", encoding="utf-8")
         except OSError:
             pass
+
+    def _campaign_copy(self, whole: bool = False) -> None:
+        """Markierte Zeilen (sonst die ganze Ansicht, wie gefiltert/sortiert) in die Zwischenablage: Kopfzeile und
+        Spalten mit Tabulator getrennt - passt in Texteditor, Tabellen und Chat."""
+        v = self._camp_views.get(self.camp_view_var.get())
+        if v is None:
+            self._overlay_note("Kampagne: nichts zu kopieren.")
+            return
+        rows = self._camp_rows(v)
+        sel = set(self.camp_tree.selection())
+        if sel and not whole:
+            rows = [r for r in rows if r[0] in sel]
+        tab = chr(9)
+        lines = [self.camp_view_var.get() + " - " + (self._camp_header_text or ""),
+                 tab.join(c for c, _ in v.columns)]
+        lines += [tab.join(str(c) for c in cells).rstrip() for _, cells in rows]
+        self.clipboard_clear()
+        self.clipboard_append(chr(10).join(lines))
+        self._overlay_note(f"Kampagne: {len(rows)} Zeilen in die Zwischenablage kopiert.")
 
     # ---------- Berater (Stufe 2) ----------
     def _campaign_adv_view(self) -> None:
@@ -1065,6 +1091,16 @@ class App(tk.Tk):
                 self._append(f"Berater: FEHLER {err}\n")
             else:
                 self._camp_history = getattr(self, "_camp_history", []) + [ex]
+                try:                                   # Protokoll: Frage und Antwort zum Nachlesen (logs/)
+                    (HERE / "logs").mkdir(exist_ok=True)
+                    rec = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "turn": getattr(self, "_camp_adv_turn", None),
+                           "question": ex.question, "model": ex.model, "fog": fog, "usage": ex.usage,
+                           "advice": ex.advice.model_dump()}
+                    with open(HERE / "logs" / f"campaign_advisor_{time.strftime('%Y%m%d')}.jsonl", "a",
+                              encoding="utf-8") as f:
+                        f.write(json.dumps(rec, ensure_ascii=False) + chr(10))
+                except OSError:
+                    pass
                 u = ex.usage or {}
                 self._append(f"Berater: {len(ex.advice.actions)} Maßnahmen, {len(ex.advice.risks)} Risiken "
                              f"(Tokens ein {u.get('input_tokens', '?')}, Cache {u.get('cache_read_input_tokens', 0)}, "
@@ -1577,6 +1613,8 @@ class App(tk.Tk):
             self._schedule_save()
         elif k == "camp_sort":                              # Kampagne: Spaltenkopf im Overlay -> sortieren
             self._campaign_sort(a[1])
+        elif k == "camp_copy":                              # Kampagne: Auswahl bzw. Ansicht kopieren
+            self._campaign_copy()
         elif k == "camp_filter_clear":                      # Kampagne: Filter leeren
             self.camp_filter_var.set("")
         elif k == "camp_important":                         # Kampagne: nur dringende und wichtige

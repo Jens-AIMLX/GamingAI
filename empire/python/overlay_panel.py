@@ -480,7 +480,7 @@ def render(p: PanelData) -> tuple[Image.Image, list[Hot]]:
 CAMP_SHORT = {"Empfehlungen": "Empfehl.", "Berater": "Berater", "Militär": "Militär", "Regionen": "Regionen", "Bauplätze": "Bauten",
               "Forschung": "Forschung", "Feinde": "Feinde", "Diplomatie": "Diplom.", "Handel": "Handel",
               "Missionen": "Missionen"}
-CAMP_TAG_COLOR = {"urgent": ORANGE, "warn": GOLD, "muted": MUTED}
+CAMP_TAG_COLOR = {"urgent": ORANGE, "warn": GOLD, "muted": MUTED, "link": BLUE}
 
 
 def _fit(text: str, f, width: float) -> str:
@@ -531,6 +531,7 @@ def _campaign(pt: Painter, top: int, bottom_y: int) -> None:
         d.text((fx0 + 6, by + 3), "Suchtext … (klicken)", font=f11, fill=MUTED)
     if p.camp_filter:
         pt.button(fx1 + 4, by, "×", ("camp_filter_clear",))
+    pt.button(W - 12 - int(font(11, True).getlength("Kopieren")) - 14, by, "Kopieren", ("camp_copy",))
     y0, y1 = by + 24, bottom_y - 4
     d.rectangle((12, y0, W - 12, y1), fill=PANEL, outline=EDGE)
     cols = list(p.camp_cols)
@@ -563,7 +564,10 @@ def _campaign(pt: Painter, top: int, bottom_y: int) -> None:
             pt.hots.append(Hot(13, yy - 1, W - 22, yy + LINE_H - 2, ("camp_row", key)))
         col = CAMP_TAG_COLOR.get(tag, TEXT)
         for cell, (cx, cw) in zip(cells, xs):
-            d.text((cx, yy), _fit(str(cell), f11, cw - 6), font=f11, fill=col)
+            txt = _fit(str(cell), f11, cw - 6)
+            d.text((cx, yy), txt, font=f11, fill=col)
+            if tag == "link" and txt.strip() and not txt.startswith("↗"):     # Link: unterstreichen
+                d.line((cx, yy + 14, cx + f11.getlength(txt), yy + 14), fill=col, width=1)
     bar = (W - 21, y0 + 20, W - 15, y1 - 2)
     pt.scrollbar(W - 21, y0 + 20, y1 - y0 - 22, len(rows), visible, first)
     pt.hots.append(Hot(12, y0 + 20, W - 12, y1, ("scroll", "camp"), total=len(rows), visible=visible, first=first,

@@ -35,6 +35,44 @@ Rules:
 - Order actions by priority (1 = must do now, 2 = should do this turn, 3 = when convenient). At most 12 actions.
 - For a question: answer it directly in 'summary' (may be several paragraphs), add actions only if they follow from
   the answer.
+- Be decisive and unambiguous. For every problem give: cause (with the numbers from the report) -> concrete fix
+  (which army/agent/building/setting, where, in which order) -> expected effect. Never answer "cannot be fixed from
+  the report" when the game mechanics below offer a lever; say which lever and how strong it is likely to be.
+- Distinguish quick fixes (this turn) from lasting fixes (several turns). The player needs results NEXT TURN:
+  always list the fastest levers first, each with an estimated effect in order points, and add them up against the
+  deficit (e.g. lower class -25 needs at least +25: garrison inside the capital +x, tax exemption +4, ...). If the
+  quick levers do not close the gap, say so plainly and name the strongest remaining measure (e.g. demolish the
+  school/university that drives the reform demand) or the military fallback (strong army inside the capital to crush
+  a revolt). Never suggest moves that make the problem worse (e.g. sending a gentleman into a region with reform
+  demand, assigning research there).
+
+GAME MECHANICS (Empire: Total War) - use these levers:
+Public order and rebellion
+- Each region has order for the upper and the lower class; the report lists every factor with its value and the
+  game's forecast for next turn. Below 0 the class is unhappy; staying negative leads to riots, then a rebellion
+  (rebel army appears, the region can be lost). Fix the worst class first, starting with the largest negative factor.
+- Garrison: only units INSIDE the regional capital give "Truppen in Garnison (Repression)"; armies standing elsewhere
+  in the region give nothing. More units = more repression. Quick fix: move armies into the capital (end the move on
+  the settlement) or recruit cheap units there.
+- Taxes: "Steuerlast" falls if the region is made tax-exempt (region panel) or the theatre tax rate for that class is
+  lowered (government screen; affects all regions of that theatre). Tax exemption also lets wealth grow.
+- Repression also comes from the government type, the ministers (justice/police) and government buildings
+  ("Regierungsgebäude") - upgrading the governor's/administrative building in the capital raises it.
+- "Forderung nach Reformen" (demand for reform) comes from enlightenment: schools/universities in the region and
+  gentlemen (Edelmann) nearby raise it, especially under absolute monarchy. Levers: keep gentlemen out of the
+  region, do not build further schools there, in an emergency demolish or downgrade the school/university of the
+  region (removes the source), add repression (garrison, governor building), lower taxes; long term a government
+  reform (constitutional monarchy/republic) ends the pressure but changes the whole realm.
+- "Widerstand gegen Fremdbesatzung" (occupation resistance) shrinks by itself over the turns after a conquest; bridge
+  the time with garrison and low taxes.
+- "Religiöse Unruhe": the region's religion differs from the state religion - send a missionary of the own faith
+  (Missionar) into the region and keep him there; churches of the state religion help.
+- "Unterhaltung und Kultur": entertainment/culture buildings (theatre, opera, coffee house etc.) please the upper
+  class. "Industrialisierung": factories anger the lower class - counter with garrison/repression.
+- A region in open rebellion: crush the rebel army with a strong army, then garrison the capital.
+Economy and military
+- Damaged buildings produce less until repaired; idle universities waste research; trade routes are lost when a
+  port is blockaded - send warships. Armies refill only when standing in own territory and not moving.
 """
 
 
@@ -67,10 +105,61 @@ def _cut(rows: list[str], label: str) -> list[str]:
     return rows
 
 
+def problem_regions(st: dict, limit: int = 12) -> list[str]:
+    """Regionen mit knapper Ordnung (eine Schicht < 3) im Detail: alle Faktoren beider Schichten mit Wert und
+    Prognose des Spiels, Garnison IN der Siedlung (zaehlt) und Truppen nur in der Region (zaehlen nicht), Gebaeude,
+    Religion, Steuer, Statthalter, eigene Agenten dort."""
+    out = []
+    regs = []
+    for r in _list(st.get("regions")):
+        vals = [x for x in order_totals(r) if x is not None]
+        if vals and min(vals) < 3:
+            regs.append((min(vals), r))
+    for worst, r in sorted(regs, key=lambda x: x[0])[:limit]:
+        name, sett = str(r.get("Name", "")), str(r.get("Settlement", ""))
+        up, lo = order_totals(r)
+        out.append(f"  == {name} (capital {sett}): order upper {up:g}, lower {lo:g}; religion {r.get('ReligionKey')}; "
+                   + ("UNTAXED" if r.get("Taxed") is False else
+                      f"tax {_num(r.get('UpperTaxPercentage')) * 100:.0f}/{_num(r.get('LowerTaxPercentage')) * 100:.0f}%")
+                   + f"; governor {r.get('Governor', '-')}; wealth {r.get('Wealth')}")
+        for cls, key in (("upper", "upper_order"), ("lower", "lower_order")):
+            fs = _list(_dict(r.get(key)).get("factors"))
+            if fs:
+                out.append(f"     {cls} class factors: " + ", ".join(
+                    f"{'+' if f.get('positive') else '-'}{f.get('value')} {f.get('name')}"
+                    + (f" (next turn {f.get('predicted'):+g})" if _num(f.get('predicted')) else "") for f in fs))
+        inside = [a for a in _list(st.get("armies")) if str(a.get("Location", "")) == sett]
+        outside = [a for a in _list(st.get("armies")) if str(a.get("Location", "")) == name]
+        out.append("     garrison INSIDE the capital (counts for repression): "
+                   + (", ".join(f"{a.get('Name')} {a.get('Soldiers')} men/{a.get('Units')} units" for a in inside) or "none"))
+        if outside:
+            out.append("     armies in the region but OUTSIDE the capital (no repression effect): "
+                       + ", ".join(f"{a.get('Name')} {a.get('Soldiers')} men/{a.get('Units')} units" for a in outside))
+        ag = [a for a in _list(st.get("agents")) if str(a.get("Location", "")) in (sett, name)]
+        if ag:
+            out.append("     own agents here: " + ", ".join(f"{a.get('AgentType')} {a.get('Name')}" for a in ag))
+        bs = [b for b in _list(st.get("buildings")) if str(b.get("region")) == name and b.get("building_key") != "empty"]
+        if bs:
+            out.append("     buildings: " + ", ".join(f"{b.get('name')} {int(_num(b.get('level')))}/"
+                                                     f"{int(_num(b.get('max_level')))} ({b.get('location')})"
+                                                     + (f" DAMAGED {int(b['health'])}%" if isinstance(b.get('health'), (int, float)) and b['health'] < 100 else "")
+                                                     for b in bs))
+        free = [str(b.get("slot_type") or b.get("location")) for b in _list(st.get("buildings"))
+                if str(b.get("region")) == name and b.get("building_key") == "empty"]
+        if free:
+            out.append("     empty slots: " + ", ".join(free))
+    if out:
+        out.insert(0, "PROBLEM REGIONS IN DETAIL (order below 3 in a class):")
+    return out
+
+
 def brief(st: dict, include_fog: bool = False) -> str:
     m, fa, sta = _dict(st.get("meta")), _dict(st.get("faction")), _dict(st.get("state"))
     fin = finances(st)
-    L = [f"REALM: {fa.get('Name', m.get('faction'))} - turn {m.get('turn')}, {m.get('season')} {m.get('year')}, "
+    mtypes = sorted({str(a.get("AgentType")) for a in _list(st.get("agents")) if a.get("AgentType")})
+    L = [f"GOVERNMENT: {sta.get('DatabaseKey')} (popularity {sta.get('Popularity')}); own agent types: "
+         + (", ".join(mtypes) or "-")]
+    L += [f"REALM: {fa.get('Name', m.get('faction'))} - turn {m.get('turn')}, {m.get('season')} {m.get('year')}, "
          f"ranking power {fa.get('PowerRanking')} / prestige {fa.get('PrestigeRanking')} / wealth {fa.get('WealthRanking')}",
          f"MONEY: treasury {_money(fin['treasury'])}, balance per year {_money(fin['net_year'])} "
          f"(income {_money(sta.get('AnnualIncome'))}, army upkeep {_money(sta.get('ArmyUpkeep'))}, "
@@ -93,6 +182,7 @@ def brief(st: dict, include_fog: bool = False) -> str:
             rows[-1] += f"; unrest: {', '.join(iss[:3])}"
     L.append(f"REGIONS ({len(rows)}), worst order first (order = upper/lower class, negative = unrest):")
     L += _cut(rows, "regions")
+    L += problem_regions(st)
 
     bl = _list(st.get("buildings"))
     dmg = [b for b in bl if isinstance(b.get("health"), (int, float)) and b["health"] < 100]
@@ -207,6 +297,25 @@ def targets(st: dict, include_fog: bool = False) -> dict[str, str]:
         if tp and e.get("Name"):
             t.setdefault(str(e["Name"]).lower(), tp)
     return t
+
+
+def mentions(text: str, tmap: dict[str, str]) -> list[tuple[str, str]]:
+    """Bekannte Namen (Armeen, Flotten, Agenten, Regionen, Siedlungen, Orte) im Text, in Reihenfolge des Auftretens:
+    (Name wie im Text, Kamerasprung). Nur ganze Woerter ab 4 Zeichen; laengere Namen gehen vor (\"Neu-Granada\"
+    statt \"Granada\"); jedes Ziel einmal."""
+    import re
+    low = str(text or "").lower()
+    found: list[tuple[int, int, str]] = []
+    for k in sorted((k for k in tmap if len(k) >= 4), key=len, reverse=True):
+        for m in re.finditer(r"(?<![\w-])" + re.escape(k) + r"(?![\w-])", low):
+            if not any(s <= m.start() < e or s < m.end() <= e for s, e, _ in found):
+                found.append((m.start(), m.end(), k))
+    out, seen = [], set()
+    for s, e, k in sorted(found):
+        if tmap[k] not in seen:
+            seen.add(tmap[k])
+            out.append((str(text)[s:e], tmap[k]))
+    return out
 
 
 def target_for(where: str, tmap: dict[str, str]) -> str:

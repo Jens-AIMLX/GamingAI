@@ -239,7 +239,7 @@ def build(st: dict, include_fog: bool = False) -> dict[str, View]:
             "Diplomatie": _diplomacy(st), "Handel": _trade(st), "Missionen": _missions(st)}
 
 
-def _wrap(text: str, width: int = 120) -> list[str]:
+def _wrap(text: str, width: int = 72) -> list[str]:   # passt in die Spalte "Massnahme" (Steuerpult und Overlay)
     import textwrap
     out: list[str] = []
     for para in str(text or "").splitlines():
@@ -250,7 +250,7 @@ def _wrap(text: str, width: int = 120) -> list[str]:
 def advisor_view(history: list, tmap: dict[str, str], busy: str = "", error: str = "") -> View:
     """Berater (Stufe 2): neuester Wechsel zuerst - Frage, Lage/Antwort, Massnahmen (mit Sprungziel), Risiken.
     history: advisor.Exchange; tmap: advisor.targets(st)."""
-    from .advisor import target_for
+    from .advisor import mentions, target_for
 
     rows, tags, targets = [], {}, {}
 
@@ -260,6 +260,11 @@ def advisor_view(history: list, tmap: dict[str, str], busy: str = "", error: str
             tags[key] = tag
         if target:
             targets[key] = target
+    def links(prefix, text):
+        """Genannte Orte/Armeen als eigene, anklickbare Zeilen (blau, unterstrichen = Link)."""
+        for j, (name, t) in enumerate(mentions(text, tmap)):
+            add(f"{prefix}:{j}", ("", "↗ Orte" if j == 0 else "", name, ""), "link", t)
+
     if busy:
         add("adv:busy", ("", "Berater", busy, ""), "warn")
     if error:
@@ -275,12 +280,17 @@ def advisor_view(history: list, tmap: dict[str, str], busy: str = "", error: str
                 add(f"adv:{i}:q:{j}", ("", "Frage" if j == 0 else "", line, ""), "muted")
         for j, line in enumerate(_wrap(a.summary)):
             add(f"adv:{i}:s:{j}", ("", ("Antwort" if ex.question else "Lage") if j == 0 else "", line, ""))
+        links(f"adv:{i}:sl", a.summary)
         for j, act in enumerate(sorted(a.actions, key=lambda x: x.prio)):
             pr = PRIO_NAME.get(act.prio, str(act.prio))
-            add(f"adv:{i}:a:{j}", (pr, act.area, act.action, act.reason + (f" ({act.where})" if act.where else "")),
-                {1: "urgent", 2: "", 3: "muted"}.get(act.prio, ""), target_for(act.where, tmap))
+            t = target_for(act.where, tmap)
+            where = (f"↗ {act.where}" if t else act.where) if act.where else ""
+            add(f"adv:{i}:a:{j}", (pr, act.area, act.action, (where + " – " if where else "") + act.reason),
+                {1: "urgent", 2: "", 3: "muted"}.get(act.prio, ""), t)
         for j, r in enumerate(a.risks):
-            add(f"adv:{i}:r:{j}", ("", "Risiko" if j == 0 else "", r, ""), "warn")
+            for k, line in enumerate(_wrap(r)):
+                add(f"adv:{i}:r:{j}:{k}", ("", "Risiko" if j == 0 and k == 0 else "", line, ""), "warn")
+        links(f"adv:{i}:rl", " ".join(a.risks))
         if n < len(history) - 1:
             add(f"adv:{i}:sep", ("", "", "", ""))
     return View([("Priorität", 9), ("Bereich", 10), ("Maßnahme", 50), ("Grund / Ort", 31)], rows, tags, targets)
