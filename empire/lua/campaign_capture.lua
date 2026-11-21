@@ -285,12 +285,20 @@ do
 			local KNOWN = { building_key = 1, chains = 1, entry_tooltip1 = 1, entry_tooltip2 = 1, faction_key = 1,
 			                image = 1, level = 1, location = 1, max_level = 1, name = 1, region_key = 1, slot = 1,
 			                slot_key = 1, slot_type = 1, type = 1 }
-			local bb = C.BuildingBrowserDetails(nil)
-			if type(bb) ~= "table" or bb.region == nil then return end
-			local first, cur, n = bb.region, bb.region, 0
-			repeat
+			-- Ueber die eigene Regionsliste (SettlementsRegion liefert Pointer<REGION>, denselben Typ wie der
+			-- Bau-Browser) - NICHT ueber NextAutoSettlementSelection: das ist der Knopf "naechste Siedlung" und waehlt
+			-- die Siedlungen wirklich an; die Karte sprang dabei immer wieder zur Hauptstadt (2026-11-21).
+			local regs = {}
+			local list = C.RetrieveFactionRegionList(pid)
+			for i = 1, (type(list) == "table" and #list or 0) do
+				local e = list[i]
+				if type(e) == "table" and e.SettlementAddress ~= nil then
+					local reg = C.SettlementsRegion(e.SettlementAddress)
+					if reg ~= nil then regs[#regs + 1] = reg end
+				end
+			end
+			for _, cur in ipairs(regs) do
 				local d = C.BuildingBrowserDetails(cur)
-				n = n + 1
 				if type(d) == "table" then
 					for _, sl in pairs(d.slots or {}) do
 						if type(sl) == "table" then
@@ -307,8 +315,7 @@ do
 						end
 					end
 				end
-				cur = C.NextAutoSettlementSelection(cur)
-			until cur == nil or cur == first or n >= 400
+			end
 		end) end
 		if heavy then step("gebaeudezustand", function()
 			for _, ref in ipairs(slot_refs) do
