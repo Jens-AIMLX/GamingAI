@@ -67,23 +67,51 @@ def target_region(name) -> str:
     return f"region\t{name}" if name else ""
 
 
-def strength(c: dict) -> dict | None:
-    """Staerke einer Armee/Flotte aus ihren Einheiten (Erfassung 'armeeinhalt'): Maenner/Soll, Anteil, beschaedigte
-    bzw. unterbesetzte Einheiten, Kosten zum Auffuellen/Reparieren, Zusammensetzung nach Klasse (Spielnamen)."""
+def unit_scale(st: dict) -> float:
+    """Einheitengroesse des Spiels relativ zur Sollstaerke im Einheitenrekord (MaxMen gilt fuer die groesste
+    Einstellung; bei 'gross' sind volle Einheiten z. B. 120 von 160 = 0,75): haeufigstes Verhaeltnis Men/MaxMen
+    ueber alle eigenen Einheiten (nur Werte <= 1)."""
+    if "_unit_scale" in st:
+        return st["_unit_scale"]
+    counts: dict[float, int] = {}
+    for kind in ("armies", "navies"):
+        for c in _list(st.get(kind)):
+            for u in _list(c.get("units")):
+                mx = _num(u.get("MaxMen")) if isinstance(u, dict) else 0
+                if mx > 0 and 0 < _num(u.get("Men")) <= mx:
+                    r = round(_num(u.get("Men")) / mx, 2)
+                    counts[r] = counts.get(r, 0) + 1
+    scale = max(counts.items(), key=lambda kv: (kv[1], kv[0]))[0] if counts else 1.0
+    st["_unit_scale"] = scale
+    return scale
+
+
+def strength(c: dict, scale: float = 1.0) -> dict | None:
+    """Staerke einer Armee/Flotte aus ihren Einheiten (Erfassung 'armeeinhalt'): Maenner gegen die volle Staerke bei
+    der Einheitengroesse des Spiels (scale * MaxMen, siehe unit_scale), Anteil, unterbesetzte Einheiten, Kosten zum
+    Auffuellen/Reparieren, Zusammensetzung nach Klasse (Spielnamen)."""
     units = [u for u in _list(c.get("units")) if isinstance(u, dict)]
     if not units:
         return None
-    men = sum(_num(u.get("Men")) for u in units)
-    full = sum(_num(u.get("MaxMen")) or _num(u.get("Men")) for u in units)
-    hurt = [u for u in units if u.get("NeedsRepair") or (_num(u.get("MaxMen")) and _num(u.get("Men")) < _num(u.get("MaxMen")))]
+    men = full = 0.0
+    hurt = 0
+    for u in units:
+        m, mx = _num(u.get("Men")), _num(u.get("MaxMen")) * scale
+        if mx <= 0 or m > mx * 1.05:                 # ohne Soll oder ungewoehnlich (z. B. Geschuetze): als voll werten
+            mx = m
+        men += min(m, mx)
+        full += mx
+        if m < mx * 0.97:
+            hurt += 1
     classes: dict[str, int] = {}
     for u in units:
         k = str(u.get("Class") or u.get("Name") or "?")
         classes[k] = classes.get(k, 0) + 1
-    return {"men": men, "full": full, "pct": 100 * men / full if full else 100.0, "hurt": len(hurt),
+    return {"men": men, "full": full, "pct": 100 * men / full if full else 100.0, "hurt": hurt,
             "cost": sum(_num(u.get("RepairCost")) for u in units if u.get("NeedsRepair")),
             "classes": sorted(classes.items(), key=lambda kv: -kv[1]),
             "upkeep": sum(_num(u.get("UpkeepCost")) for u in units)}
+
 
 def load_state(path: Path) -> dict | None:
     try:
@@ -357,7 +385,7 @@ def recommendations(st: dict, include_fog: bool = False) -> list[Advice]:
         if 0 < units < FULL_STACK // 2:
             A.append(Advice(3, "Militär", f"Armee {a.get('Name')} in {a.get('Location')} hat nur {units} Einheiten",
                             "auffüllen oder mit einer anderen Armee vereinigen", target_pos(a)))
-        sg = strength(a)
+        sg = strength(a, unit_scale(st))
         if sg and sg["pct"] < 70:
             A.append(Advice(2 if sg["pct"] < 50 else 3, "Militär",
                             f"Armee {a.get('Name')} in {a.get('Location')} nur bei {sg['pct']:.0f} % Sollstärke "
@@ -365,7 +393,7 @@ def recommendations(st: dict, include_fog: bool = False) -> list[Advice]:
                             "in eigener Region stehen lassen, damit sie sich auffüllt"
                             + (f" - Auffüllen kostet {_money(sg['cost'])}" if sg["cost"] else ""), target_pos(a)))
     for n in _list(st.get("navies")):
-        sg = strength(n)
+        sg = strength(n, unit_scale(st))
         if sg and sg["hurt"]:
             A.append(Advice(2 if sg["pct"] < 60 else 3, "Militär",
                             f"Flotte {n.get('Name')} bei {n.get('Location')}: {sg['hurt']} Schiffe beschädigt "

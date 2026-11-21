@@ -129,3 +129,9 @@ Bauschlange: kein Feld in den Slots gefunden (es war nichts im Bau?) – die Erf
 - **Armeezusammensetzung (Probe 6, 2026-11-21):** `RetrieveContainedEntitiesFromCharacter(char.Address, char.Address)` (wie das Austauschfenster) liefert `Units` mit je `Name`, `Men`, `Experience`, `NeedsRepair`, `RepairCost`, `Replenishable`, `UpkeepCost`, `UnitRecord` (`Men` = Sollstaerke, `Class`, `Key`). `MissionsDetails()` liefert `active_missions`/`expired_missions`. Bau- und Rekrutierungsschlangen haben **keine** Abfrage (das Spiel schiebt sie nur in seine Fenster).
 - **Kamerasprung:** nur ohne Zeiger auf Figuren - `SetCameraTarget(PosX, PosY, -1)`, `SelectAndZoomToSlot(region_key, slot_key, -1)`, `SelectAndZoomToRegion(region, -1)` (Region aus `SettlementsRegion`). Auftrag ueber `ai_bridge/campaign_zoom.txt`, Absturzschutz je Art (`campaign_zoom.progress`/`.skip`).
 - **Handel:** `TradeInfo()` - `supply_theatres[i]` (entry_name, percent_pilfered) gehoert zu `supply_goods[i]` (tooltip, value, value_blockaded, value_raided), ebenso `trade_factions[i]`/`trade_goods[i]`; dazu `prices`, `price_changes`.
+
+## Stufe 2: Berater
+
+- `empire_campaign/advisor.py`: Lagebericht kompakt (~50.000 Zeichen bei 92 Armeen/103 Regionen), Aufruf ueber `messages.parse` (strukturiert: Lage, Massnahmen mit Ort, Risiken), System-Prompt gecacht. Rueckfragen im selben Zug mit Verlauf (Lagebericht nur in der letzten Nachricht). Nebel wie im Bericht: ohne Schalter kein verborgener Feind.
+- Modell = Auswahl "Feldherr" im Steuerpult (Regel-Feldherr -> Sonnet), Denktiefe = Auswahl.
+- Einheitengroesse: `MaxMen` im Einheitenrekord gilt fuer die groesste Einstellung; volle Einheiten haben z. B. 0,75 davon - `report.unit_scale` ermittelt den Massstab (haeufigstes Verhaeltnis).

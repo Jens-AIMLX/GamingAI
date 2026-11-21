@@ -461,7 +461,8 @@ def render(p: PanelData) -> tuple[Image.Image, list[Hot]]:
             d.line((cx, cy + 4, cx, cy + 16), fill=GOLD, width=2)
     else:
         d.text((tx + 6, cy + 3), "Befehl eingeben \u2026 (klicken)", font=f11, fill=MUTED)
-    pt.button(W - 80, cy, "Senden", ("send",), enabled=p.running and bool(p.chat_text.strip()))
+    pt.button(W - 80, cy, "Senden", ("send",),
+              enabled=(p.running or p.chat_target == "Berater") and bool(p.chat_text.strip()))
 
     # Griff zum Groesse-Aendern (unten rechts)
     for k in (4, 8, 12):
@@ -476,7 +477,7 @@ def render(p: PanelData) -> tuple[Image.Image, list[Hot]]:
     return pt.img, pt.hots
 
 
-CAMP_SHORT = {"Empfehlungen": "Empfehl.", "Militär": "Militär", "Regionen": "Regionen", "Bauplätze": "Bauten",
+CAMP_SHORT = {"Empfehlungen": "Empfehl.", "Berater": "Berater", "Militär": "Militär", "Regionen": "Regionen", "Bauplätze": "Bauten",
               "Forschung": "Forschung", "Feinde": "Feinde", "Diplomatie": "Diplom.", "Handel": "Handel",
               "Missionen": "Missionen"}
 CAMP_TAG_COLOR = {"urgent": ORANGE, "warn": GOLD, "muted": MUTED}
@@ -496,7 +497,8 @@ def _campaign(pt: Painter, top: int, bottom_y: int) -> None:
     p, d = pt.p, pt.d
     f10, f11 = font(10), font(11)
     x = W - 12
-    for label, action, accent in (("Aktualisieren", ("camp_refresh",), False),
+    for label, action, accent in (("Zugplan", ("camp_plan",), True),
+                                  ("Aktualisieren", ("camp_refresh",), False),
                                   ("Nebel: einbezogen" if p.camp_fog else "Nebel: aus", ("camp_fog",), p.camp_fog),
                                   ("Nur wichtige", ("camp_important",), p.camp_important)):
         x -= int(font(11, True).getlength(label)) + 14

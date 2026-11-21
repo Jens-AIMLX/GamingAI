@@ -6,9 +6,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .report import (FULL_STACK, PRIO_NAME, _dict, _list, _money, _num, enemy_armies, finances, order_totals,
-                     recommendations, strength, target_pos, target_region, target_slot)
+                     recommendations, strength, unit_scale, target_pos, target_region, target_slot)
 
-VIEWS = ["Empfehlungen", "Militär", "Regionen", "Bauplätze", "Forschung", "Feinde", "Diplomatie", "Handel",
+VIEWS = ["Empfehlungen", "Berater", "Militär", "Regionen", "Bauplätze", "Forschung", "Feinde", "Diplomatie", "Handel",
          "Missionen"]
 
 
@@ -67,7 +67,7 @@ def _military(st: dict) -> View:
             key = f"{kind}:{c.get('Name')}:{i}"
             ap = (f"{int(_num(c.get('ActionPoints')))}/{int(_num(c.get('ActionPointsPerTurn')))}"
                   if c.get("ActionPointsPerTurn") else "")
-            sg = strength(c) if label else None
+            sg = strength(c, unit_scale(st)) if label else None
             stren = ""
             if sg:
                 stren = f"{sg['pct']:.0f} %" + (f" ({sg['hurt']}×)" if sg["hurt"] else "")
@@ -237,3 +237,50 @@ def build(st: dict, include_fog: bool = False) -> dict[str, View]:
     return {"Empfehlungen": _recommendations(st, include_fog), "Militär": _military(st), "Regionen": _regions(st),
             "Bauplätze": _buildings(st), "Forschung": _research(st), "Feinde": _enemies(st, include_fog),
             "Diplomatie": _diplomacy(st), "Handel": _trade(st), "Missionen": _missions(st)}
+
+
+def _wrap(text: str, width: int = 120) -> list[str]:
+    import textwrap
+    out: list[str] = []
+    for para in str(text or "").splitlines():
+        out += textwrap.wrap(para, width) or ([""] if out else [])
+    return out or [""]
+
+
+def advisor_view(history: list, tmap: dict[str, str], busy: str = "", error: str = "") -> View:
+    """Berater (Stufe 2): neuester Wechsel zuerst - Frage, Lage/Antwort, Massnahmen (mit Sprungziel), Risiken.
+    history: advisor.Exchange; tmap: advisor.targets(st)."""
+    from .advisor import target_for
+
+    rows, tags, targets = [], {}, {}
+
+    def add(key, cells, tag="", target=""):
+        rows.append((key, cells))
+        if tag:
+            tags[key] = tag
+        if target:
+            targets[key] = target
+    if busy:
+        add("adv:busy", ("", "Berater", busy, ""), "warn")
+    if error:
+        add("adv:error", ("", "Fehler", error, ""), "urgent")
+    if not history and not busy and not error:
+        add("adv:empty", ("", "", "Noch kein Rat - „Zugplan“ anfordern oder in der Befehlszeile eine Frage an den "
+                                  "Berater stellen.", ""), "muted")
+    for n, ex in enumerate(reversed(history)):
+        i = len(history) - n
+        a = ex.advice
+        if ex.question:
+            for j, line in enumerate(_wrap(ex.question)):
+                add(f"adv:{i}:q:{j}", ("", "Frage" if j == 0 else "", line, ""), "muted")
+        for j, line in enumerate(_wrap(a.summary)):
+            add(f"adv:{i}:s:{j}", ("", ("Antwort" if ex.question else "Lage") if j == 0 else "", line, ""))
+        for j, act in enumerate(sorted(a.actions, key=lambda x: x.prio)):
+            pr = PRIO_NAME.get(act.prio, str(act.prio))
+            add(f"adv:{i}:a:{j}", (pr, act.area, act.action, act.reason + (f" ({act.where})" if act.where else "")),
+                {1: "urgent", 2: "", 3: "muted"}.get(act.prio, ""), target_for(act.where, tmap))
+        for j, r in enumerate(a.risks):
+            add(f"adv:{i}:r:{j}", ("", "Risiko" if j == 0 else "", r, ""), "warn")
+        if n < len(history) - 1:
+            add(f"adv:{i}:sep", ("", "", "", ""))
+    return View([("Priorität", 9), ("Bereich", 10), ("Maßnahme", 50), ("Grund / Ort", 31)], rows, tags, targets)

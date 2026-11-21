@@ -40,6 +40,7 @@ from empire_bridge import EmpireBridge  # noqa: E402
 import overlay_panel  # noqa: E402
 from empire_campaign import report as campaign_report  # noqa: E402
 from empire_campaign import views as campaign_views  # noqa: E402
+from empire_campaign import advisor as campaign_advisor  # noqa: E402
 
 MODELS = {
     "Claude Opus 5.5 (stärkstes Modell)": ("claude", "claude-opus-5-5"),
@@ -125,6 +126,8 @@ def read_config() -> tuple[str, bool, bool]:
         return ("enemy", False, True)
 
 
+
+CHAT_TARGETS = ["Meine Armee", "Gegner", "Berater"]       # Berater = Fragen auf der Kampagnenkarte (Stufe 2)
 
 CAMP_EMPTY = ("Noch kein Lagebericht dieser Sitzung - er entsteht zu Beginn jedes eigenen Zugs und nach dem ersten "
               "Klick auf der Kampagnenkarte.")
@@ -403,7 +406,7 @@ class App(tk.Tk):
         chat.columnconfigure(2, weight=1)
         ttk.Label(chat, text="Befehl an").grid(row=0, column=0, sticky="w")
         self.chat_target = tk.StringVar(value="Meine Armee")
-        ttk.Combobox(chat, textvariable=self.chat_target, values=["Meine Armee", "Gegner"], state="readonly",
+        ttk.Combobox(chat, textvariable=self.chat_target, values=CHAT_TARGETS, state="readonly",
                      width=12).grid(row=0, column=1, padx=4)
         self.chat_var = tk.StringVar()
         self.chat_entry = ttk.Entry(chat, textvariable=self.chat_var)
@@ -859,6 +862,10 @@ class App(tk.Tk):
     # ---------- Chat ----------
     def _send_order(self) -> None:
         text = self.chat_var.get().strip()
+        if text and self.chat_target.get() == "Berater":      # Frage an den Berater (Kampagne)
+            self._campaign_ask(text)
+            self.chat_var.set("")
+            return
         if not text or not self._running():
             return
         target = "enemy" if self.chat_target.get() == "Gegner" else "player"
@@ -954,6 +961,7 @@ class App(tk.Tk):
             ttk.Radiobutton(bar, text=name, value=name, variable=self.camp_view_var,
                             command=self._campaign_view_changed).pack(side="left", padx=(0, 8))
         ttk.Button(bar, text="Aktualisieren", command=self._campaign_request).pack(side="right")
+        ttk.Button(bar, text="Zugplan", command=lambda: self._campaign_ask("")).pack(side="right", padx=(0, 6))
         self.camp_fog_var = tk.BooleanVar(value=bool(self.s.get("campaign_fog", False)))
         ttk.Checkbutton(bar, text="Nebel einbeziehen (Spezialschalter)", variable=self.camp_fog_var,
                         command=self._campaign_fog_changed).pack(side="right", padx=12)
@@ -1014,6 +1022,67 @@ class App(tk.Tk):
             (d / "campaign_zoom.txt").write_text(target + "\n", encoding="utf-8")
         except OSError:
             pass
+
+    # ---------- Berater (Stufe 2) ----------
+    def _campaign_adv_view(self) -> None:
+        """Ansicht "Berater" aus dem Verlauf dieses Zugs neu aufbauen (Sprungziele aus dem aktuellen Lagebericht)."""
+        st = getattr(self, "_camp_state", None)
+        tmap = campaign_advisor.targets(st, bool(self.camp_fog_var.get())) if st else {}
+        self._camp_views["Berater"] = campaign_views.advisor_view(
+            getattr(self, "_camp_history", []), tmap, busy=getattr(self, "_camp_adv_busy", ""),
+            error=getattr(self, "_camp_adv_error", ""))
+
+    def _campaign_ask(self, question: str) -> None:
+        """Zugplan (Frage leer) oder Frage an den Berater - im Hintergrund, Ergebnis in der Ansicht "Berater"."""
+        if getattr(self, "_camp_adv_busy", ""):
+            self._overlay_note("Berater: arbeitet noch an der letzten Anfrage.")
+            return
+        st = getattr(self, "_camp_state", None)
+        if not st:
+            self._overlay_note("Berater: noch kein Lagebericht dieser Sitzung - Kampagne laden und kurz warten.")
+            return
+        key = key_load() or os.environ.get("ANTHROPIC_API_KEY")
+        if not key:
+            self._overlay_note("Berater: kein API-Schlüssel hinterlegt (oben unter „Zugang zu Claude“).")
+            return
+        backend, model = MODELS.get(self.s.get("model"), ("claude", None))
+        model = model if backend == "claude" and model else "claude-sonnet-5-5"   # Regel-Feldherr: Sonnet beraten lassen
+        effort = self.effort_var.get() or "medium"
+        fog = bool(self.camp_fog_var.get())
+        history = list(getattr(self, "_camp_history", []))
+        self._camp_adv_busy = (f"denkt nach ({model}, {effort}) - " + (f"Frage: {question}" if question
+                                                                         else "Zugplan für diesen Zug"))
+        self._camp_adv_error = ""
+        self._campaign_adv_view()
+        self.camp_view_var.set("Berater")
+        self._campaign_view_changed()
+        self._append(f"Berater: {'Frage: ' + question if question else 'Zugplan angefordert'} ({model}, {effort})\n")
+
+        def done(ex, err):
+            self._camp_adv_busy = ""
+            if err:
+                self._camp_adv_error = err
+                self._append(f"Berater: FEHLER {err}\n")
+            else:
+                self._camp_history = getattr(self, "_camp_history", []) + [ex]
+                u = ex.usage or {}
+                self._append(f"Berater: {len(ex.advice.actions)} Maßnahmen, {len(ex.advice.risks)} Risiken "
+                             f"(Tokens ein {u.get('input_tokens', '?')}, Cache {u.get('cache_read_input_tokens', 0)}, "
+                             f"aus {u.get('output_tokens', '?')})\n")
+            self._campaign_adv_view()
+            if self.camp_view_var.get() == "Berater":
+                self._campaign_show()
+
+        def run():
+            try:
+                ex = campaign_advisor.advise(st, question, history=history, include_fog=fog, api_key=key,
+                                             model=model, effort=effort)
+                self.calls.put(lambda: done(ex, None))
+            except Exception as e:  # Anzeige in der Ansicht
+                msg = str(e).replace(key, "<Schlüssel>")
+                self.calls.put(lambda: done(None, msg))
+
+        threading.Thread(target=run, daemon=True).start()
 
     def _campaign_view_changed(self) -> None:
         self.s["campaign_view"] = self.camp_view_var.get()
@@ -1092,6 +1161,11 @@ class App(tk.Tk):
         self._camp_mtime = mt
         fog = bool(self.camp_fog_var.get())
         self._camp_views = campaign_views.build(st, fog)
+        self._camp_state = st
+        if (st.get("meta") or {}).get("turn") != getattr(self, "_camp_adv_turn", None):
+            self._camp_adv_turn = (st.get("meta") or {}).get("turn")
+            self._camp_history = []                  # neuer Zug: Rueckfragen beziehen sich nicht mehr auf den alten Plan
+        self._campaign_adv_view()
         self._camp_header_text = campaign_views.header(st)
         self.camp_header.config(text=self._camp_header_text, foreground="#1a7f37")
         m = st.get("meta") or {}
@@ -1111,6 +1185,8 @@ class App(tk.Tk):
             return
         self._camp_mtime = None
         self._camp_views = {}
+        self._camp_state = None                 # neue Sitzung: kein Lagebericht, kein Beraterverlauf
+        self._camp_history = []
         self._camp_header_text = ""
         self._camp_advice = (None, [])
         self._camp_turn = None
@@ -1258,6 +1334,10 @@ class App(tk.Tk):
         first = self._ov_mode is None
         self._ov_mode = mode
         tab = "Feldherr" if battle else "Kampagne"
+        if not battle:
+            self.chat_target.set("Berater")                  # auf der Kampagnenkarte fragt die Befehlszeile den Berater
+        elif self.chat_target.get() == "Berater":
+            self.chat_target.set("Meine Armee")
         self._ov_view = self._ov_last_view = overlay_panel.TABS.index(tab) + 1
         self._ov_menu = False
         self._ov_focus = None
@@ -1474,7 +1554,14 @@ class App(tk.Tk):
             else:
                 self._give(a[1])
         elif k == "chat_target":
-            self.chat_target.set("Gegner" if self.chat_target.get() == "Meine Armee" else "Meine Armee")
+            cur = self.chat_target.get()
+            self.chat_target.set(CHAT_TARGETS[(CHAT_TARGETS.index(cur) + 1) % len(CHAT_TARGETS)]
+                                 if cur in CHAT_TARGETS else CHAT_TARGETS[0])
+        elif k == "camp_plan":                              # Kampagne: Zugplan vom Berater
+            self._campaign_ask("")
+        elif k == "send" and self.chat_target.get() == "Berater" and self.chat_var.get().strip():
+            self._send_order()
+            self._ov_caret = 0
         elif k == "send" and running and self.chat_var.get().strip():
             self._send_order()
         elif k == "m_control":
@@ -1617,7 +1704,7 @@ class App(tk.Tk):
             if key == "chat":
                 if not self.chat_var.get().strip():
                     pass
-                elif self.proc and self.proc.poll() is None:
+                elif self.chat_target.get() == "Berater" or (self.proc and self.proc.poll() is None):
                     self._send_order()
                     self._ov_caret = 0
                 else:
