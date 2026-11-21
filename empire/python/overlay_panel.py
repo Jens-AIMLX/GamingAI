@@ -503,14 +503,32 @@ def _campaign(pt: Painter, top: int, bottom_y: int) -> None:
         pt.button(x, top - 2, label, action, accent=accent)
         x -= 6
     head = p.camp_header or "Noch kein Lagebericht - er entsteht zu Beginn jedes eigenen Zugs und nach jeder Aktion."
-    if p.camp_filter:
-        head = f"Filter „{p.camp_filter}“ · " + head
     d.text((12, top + 1), _fit(head, f10, x - 18), font=f10, fill=GREEN if p.camp_header else MUTED)
     bx, by = 12, top + 22
     for name in CAMP_SHORT:                     # Ansichten; bei schmalem Overlay in eine zweite Zeile umbrechen
         if bx + int(font(11, True).getlength(CAMP_SHORT[name])) + 14 > W - 12 and bx > 12:
             bx, by = 12, by + 23
         bx = pt.button(bx, by, CAMP_SHORT[name], ("camp_view", name), accent=p.camp_view == name) - 2
+    # Filterfeld (einzeilig wie die Befehlszeile; Text ist derselbe wie im Steuerpult)
+    by += 23
+    d.text((12, by + 3), "Filter", font=f11, fill=MUTED)
+    fx0, fx1 = 52, min(W - 40, 360)
+    focus = p.focus == "camp_filter"
+    d.rectangle((fx0, by, fx1, by + 20), fill=PANEL, outline=GOLD if focus else EDGE, width=2 if focus else 1)
+    pt.hots.append(Hot(fx0, by, fx1, by + 20, ("camp_filter_focus",)))
+    if p.camp_filter or focus:
+        caret = min(max(p.caret if focus else len(p.camp_filter), 0), len(p.camp_filter))
+        start = 0
+        while f11.getlength(p.camp_filter[start:caret]) > (fx1 - fx0 - 14):
+            start += 1
+        d.text((fx0 + 6, by + 3), p.camp_filter[start:], font=f11, fill=TEXT)
+        if focus:
+            cx = fx0 + 6 + int(f11.getlength(p.camp_filter[start:caret]))
+            d.line((cx, by + 4, cx, by + 16), fill=GOLD, width=2)
+    else:
+        d.text((fx0 + 6, by + 3), "Suchtext … (klicken)", font=f11, fill=MUTED)
+    if p.camp_filter:
+        pt.button(fx1 + 4, by, "×", ("camp_filter_clear",))
     y0, y1 = by + 24, bottom_y - 4
     d.rectangle((12, y0, W - 12, y1), fill=PANEL, outline=EDGE)
     cols = list(p.camp_cols)

@@ -1222,7 +1222,7 @@ class App(tk.Tk):
             if self.camp_view_var.get() in self._camp_views else (),
             camp_fog=bool(self.camp_fog_var.get()), camp_sel=tuple(self.camp_tree.selection()),
             camp_sort=self._camp_sort.get(self.camp_view_var.get()), camp_important=bool(self.camp_important_var.get()),
-            camp_filter=self.camp_filter_var.get().strip(),
+            camp_filter=self.camp_filter_var.get(),
             focus=self._ov_focus, caret=self._ov_caret, review=self._ov_review_data(),
             width=self._ov_geom()[2], height=self._ov_geom()[3])
 
@@ -1392,6 +1392,10 @@ class App(tk.Tk):
             self._ov_focus = "chat"
             self._ov_caret = len(self.chat_var.get())
             return
+        if a[0] == "camp_filter_focus":                         # Kampagne: Filterfeld im Overlay
+            self._ov_focus = "camp_filter"
+            self._ov_caret = len(self.camp_filter_var.get())
+            return
         if a[0] not in ("send", "chat_target"):
             self._ov_focus = None                               # anderer Klick: Tastatur zurueck ans Spiel
         self._ov_pressed = (a, time.monotonic())
@@ -1486,6 +1490,8 @@ class App(tk.Tk):
             self._schedule_save()
         elif k == "camp_sort":                              # Kampagne: Spaltenkopf im Overlay -> sortieren
             self._campaign_sort(a[1])
+        elif k == "camp_filter_clear":                      # Kampagne: Filter leeren
+            self.camp_filter_var.set("")
         elif k == "camp_important":                         # Kampagne: nur dringende und wichtige
             self.camp_important_var.set(not self.camp_important_var.get())
             self._campaign_important_changed()
@@ -1553,6 +1559,8 @@ class App(tk.Tk):
     def _ov_get(self, key: str) -> str:
         if key == "chat":
             return self.chat_var.get()
+        if key == "camp_filter":
+            return self.camp_filter_var.get()
         w = self._ov_widget(key)
         return w.get("1.0", "end-1c") if w is not None else ""
 
@@ -1561,6 +1569,8 @@ class App(tk.Tk):
         f = self._ov_focus
         if f is None or f == "chat":
             return True
+        if f == "camp_filter":
+            return not self._ov_review and bool(self._ov_view) and overlay_panel.TABS[self._ov_view - 1] == "Kampagne"
         if self._ov_review:
             return f == "rev_sug"
         tab = overlay_panel.TABS[self._ov_view - 1] if self._ov_view else ""
@@ -1572,6 +1582,9 @@ class App(tk.Tk):
         if key == "chat":
             t = self.chat_var.get()
             self.chat_var.set(t[:start] + new + t[end:])
+        elif key == "camp_filter":
+            t = self.camp_filter_var.get()
+            self.camp_filter_var.set(t[:start] + new + t[end:])      # Liste filtert sofort (trace)
         else:
             w = self._ov_widget(key)
             if w is None:
@@ -1598,6 +1611,8 @@ class App(tk.Tk):
         hot = next((h for h in self._ov_hots if h.action == ("scroll", key)), None)
         if code == 27:                                   # Esc: fertig
             self._ov_focus = None
+        elif code == 13 and key == "camp_filter":        # Enter im Filter: fertig
+            self._ov_focus = None
         elif code == 13:                                 # Enter: Chat sendet, sonst neue Zeile
             if key == "chat":
                 if not self.chat_var.get().strip():
@@ -1618,18 +1633,18 @@ class App(tk.Tk):
         elif code == 39:
             self._ov_caret = min(c + 1, len(text))
         elif code in (36, 35):                           # Pos1 / Ende (Strg: ganzer Text)
-            if ctrl or key == "chat":
+            if ctrl or key in ("chat", "camp_filter"):
                 self._ov_caret = 0 if code == 36 else len(text)
             else:
                 self._ov_caret = overlay_panel.caret_move(text, c, hot, "home" if code == 36 else "end")
-        elif code in (38, 40) and key != "chat":         # hoch / runter
+        elif code in (38, 40) and key not in ("chat", "camp_filter"):   # hoch / runter
             self._ov_caret = overlay_panel.caret_move(text, c, hot, "up" if code == 38 else "down")
         elif code == 86 and ctrl:                        # Strg+V
             try:
                 clip = self.clipboard_get()
             except tk.TclError:
                 clip = ""
-            if key == "chat":
+            if key in ("chat", "camp_filter"):
                 clip = " ".join(clip.split())
             if clip:
                 self._ov_edit(key, c, c, clip.replace("\r\n", "\n"))

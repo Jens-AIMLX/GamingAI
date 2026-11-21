@@ -344,12 +344,13 @@ do
 			S.navies = characters(raw_navies)
 		end)
 		-- Zusammensetzung (wie das Austauschfenster: RetrieveContainedEntitiesFromCharacter(character, target), Probe 6
-		-- 2026-11-21): je Einheit Staerke/Sollstaerke, Erfahrung, Reparatur, Nachschub, Unterhalt. Nur Eintraege mit
-		-- eigenem Befehlshaber (ShowAsCharacter ~= false); Flotten als eigener Schritt (eigener Absturzschutz).
-		local function contents(raw, out)
+		-- 2026-11-21): je Einheit Staerke/Sollstaerke, Erfahrung, Reparatur, Nachschub, Unterhalt. Generaele/Admirale und
+		-- Brigadiere/Kapitaene (ShowAsCharacter = false, ebenfalls Pointer<CHARACTER>, im Spiel austauschbar) und
+		-- Flotten je als eigener Schritt (eigener Absturzschutz: ein Absturz schaltet nur diesen Teil ab).
+		local function contents(raw, out, leaders)
 			for i = 1, (type(raw) == "table" and #raw or 0) do
 				local c, o = raw[i], out[i]
-				if type(c) == "table" and type(o) == "table" and c.Address ~= nil and c.ShowAsCharacter ~= false
+				if type(c) == "table" and type(o) == "table" and c.Address ~= nil and (c.ShowAsCharacter ~= false) == leaders
 				   and (tonumber(c.Units) or 0) > 0 then
 					local d = C.RetrieveContainedEntitiesFromCharacter(c.Address, c.Address)
 					local list = type(d) == "table" and (d.Units or d.Ships) or nil
@@ -374,8 +375,10 @@ do
 				end
 			end
 		end
-		step("armeeinhalt", function() contents(raw_armies, S.armies or {}) end)
-		step("flotteninhalt", function() contents(raw_navies, S.navies or {}) end)
+		step("armeeinhalt", function() contents(raw_armies, S.armies or {}, true) end)
+		step("armeeinhalt_brigadiere", function() contents(raw_armies, S.armies or {}, false) end)
+		step("flotteninhalt", function() contents(raw_navies, S.navies or {}, true) end)
+		step("flotteninhalt_kapitaene", function() contents(raw_navies, S.navies or {}, false) end)
 		-- Handel (government_screens: TradeInfo()): Herkunftsgebiete (supply_theatres[i] mit supply_goods[i]) und
 		-- Handelspartner (trade_factions[i] mit trade_goods[i]); je Ware Wert, davon blockiert/ueberfallen; Preise
 		step("handel", function()
