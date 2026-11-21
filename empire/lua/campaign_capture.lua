@@ -172,6 +172,7 @@ do
 	-- Regionen und Gebaeude (teuer: ~950 Slots) nach einer Aktion nur, wenn ihr letzter Stand aelter als HEAVY_EVERY
 	-- Sekunden ist; zu Zugbeginn und auf Knopfdruck immer. Der letzte Stand bleibt erhalten (S).
 	local HEAVY_EVERY = 20
+	local zoom_regions = {}                 -- Regionsname -> Region (fuer den Kamerasprung, aus dem letzten Umlauf)
 	local S = nil
 	local last_heavy = -1e9
 	local capturing = false
@@ -273,6 +274,7 @@ do
 						r.town_wealth = factors(d.TownWealth)
 						if type(d.Governor) == "table" then r.Governor = d.Governor.Name end
 						S.regions[#S.regions + 1] = r
+						if r.Name then zoom_regions[r.Name] = reg end
 					end
 				end
 			end
@@ -334,10 +336,46 @@ do
 				S.research[#S.research + 1] = r
 			end
 		end)
+		local raw_armies, raw_navies = {}, {}
 		step("armeen", function()
-			S.armies = characters(C.RetrieveFactionMilitaryForceLists(pid, true))
-			S.navies = characters(C.RetrieveFactionMilitaryForceLists(pid, false))
+			raw_armies = C.RetrieveFactionMilitaryForceLists(pid, true) or {}
+			raw_navies = C.RetrieveFactionMilitaryForceLists(pid, false) or {}
+			S.armies = characters(raw_armies)
+			S.navies = characters(raw_navies)
 		end)
+		-- Zusammensetzung (wie das Austauschfenster: RetrieveContainedEntitiesFromCharacter(character, target), Probe 6
+		-- 2026-11-21): je Einheit Staerke/Sollstaerke, Erfahrung, Reparatur, Nachschub, Unterhalt. Nur Eintraege mit
+		-- eigenem Befehlshaber (ShowAsCharacter ~= false); Flotten als eigener Schritt (eigener Absturzschutz).
+		local function contents(raw, out)
+			for i = 1, (type(raw) == "table" and #raw or 0) do
+				local c, o = raw[i], out[i]
+				if type(c) == "table" and type(o) == "table" and c.Address ~= nil and c.ShowAsCharacter ~= false
+				   and (tonumber(c.Units) or 0) > 0 then
+					local d = C.RetrieveContainedEntitiesFromCharacter(c.Address, c.Address)
+					local list = type(d) == "table" and (d.Units or d.Ships) or nil
+					if type(list) == "table" then
+						local units = {}
+						for j = 1, #list do
+							local u = list[j]
+							if type(u) == "table" then
+								local r = pick(u, { "Name", "Men", "Experience", "NeedsRepair", "RepairCost", "Replenishable",
+									"Replenished", "UpkeepCost", "IsArtillery", "IsNaval", "HullStrength", "Guns",
+									"ShowAsCharacter", "RegimentName" })
+								if type(u.UnitRecord) == "table" then
+									r.MaxMen = u.UnitRecord.Men
+									r.Class = u.UnitRecord.Class
+									r.Key = u.UnitRecord.Key
+								end
+								units[#units + 1] = r
+							end
+						end
+						o.units = units
+					end
+				end
+			end
+		end
+		step("armeeinhalt", function() contents(raw_armies, S.armies or {}) end)
+		step("flotteninhalt", function() contents(raw_navies, S.navies or {}) end)
 		step("agenten", function()
 			S.agents = characters(C.RetrieveFactionAgentsList(pid))
 		end)
@@ -468,6 +506,52 @@ do
 		end
 		-- Nach dem Laden (mitten im eigenen Zug) sofort voll erfassen - nicht erst beim naechsten Zugbeginn
 		local need_initial = true
+		-- Kamerasprung (Zeilenklick im Steuerpult/Overlay): ai_bridge/campaign_zoom.txt, eine Zeile mit Tabulatoren:
+		-- "pos X Y" (Armee/Flotte/Agent/Feind), "slot region_key slot_key" (Bauplatz/Universitaet), "region Name".
+		-- Nur Aufrufe in der Form der UI-Skripte und ohne Zeiger auf Figuren (ein gefallener General darf nichts
+		-- anrichten). Absturzschutz je Art: campaign_zoom.progress (BEGINN ohne ENDE) -> Art in campaign_zoom.skip.
+		local zoom_skip = nil
+		local function do_zoom()
+			if not exists("campaign_zoom.txt") then return end
+			local f = io.open(P .. "campaign_zoom.txt", "r")
+			local line = f and f:read("*l")
+			if f then f:close() end
+			os.remove(P .. "campaign_zoom.txt")
+			if not line then return end
+			local a = {}
+			for x in (line .. "\t"):gmatch("([^\t]*)\t") do a[#a + 1] = x end
+			local kind = a[1]
+			if zoom_skip == nil then
+				zoom_skip = {}
+				pcall(function() for l in io.lines(P .. "campaign_zoom.skip") do zoom_skip[l] = true end end)
+				local open = nil
+				pcall(function()
+					for l in io.lines(P .. "campaign_zoom.progress") do
+						local b = l:match("^BEGINN (.*)$")
+						if b then open = b elseif l:match("^ENDE ") then open = nil end
+					end
+				end)
+				if open and not zoom_skip[open] then
+					zoom_skip[open] = true
+					pcall(function() local g = io.open(P .. "campaign_zoom.skip", "a"); g:write(open, "\n"); g:close() end)
+					log_error("Kamerasprung '" .. open .. "' liess das Spiel abstuerzen - abgeschaltet")
+				end
+			end
+			if zoom_skip[kind] then return end
+			local prog = io.open(P .. "campaign_zoom.progress", "w")
+			if prog then prog:write("BEGINN ", kind, "\n"); prog:flush() end
+			local ok, err = pcall(function()
+				if kind == "pos" and tonumber(a[2]) and tonumber(a[3]) then
+					CampaignUI.SetCameraTarget(tonumber(a[2]), tonumber(a[3]), -1)
+				elseif kind == "slot" and a[2] and a[3] then
+					CampaignUI.SelectAndZoomToSlot(a[2], a[3], -1)
+				elseif kind == "region" and zoom_regions[a[2]] ~= nil then
+					CampaignUI.SelectAndZoomToRegion(zoom_regions[a[2]], -1)
+				end
+			end)
+			if not ok then log_error("Kamerasprung " .. line .. ": " .. tostring(err)) end
+			if prog then prog:write("ENDE ", kind, "\n"); prog:close() end
+		end
 		pcall(es.AddEventCallBack, "TimeTrigger", function(context)
 			local okn, name = pcall(function() return context.string end)
 			if not okn then return end
@@ -478,6 +562,7 @@ do
 				return
 			end
 			tick_seen = now()
+			pcall(do_zoom)
 			pcall(function()
 				if need_initial then
 					local okp, mine = pcall(CampaignUI.IsPlayersTurn)

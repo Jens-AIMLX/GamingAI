@@ -109,6 +109,7 @@ class PanelData:
     camp_cols: tuple = ()                                  # ((Ueberschrift, relative Breite), ...)
     camp_rows: tuple = ()                                  # ((Zellen...), Hervorhebung), ...
     camp_fog: bool = False                                 # Spezialschalter: Feinde im Nebel einbeziehen
+    camp_sel: tuple = ()                                   # markierte Zeile(n) (Schluessel)
     width: int = 560                                       # Groesse des Overlays (mit der Maus aenderbar)
     height: int = 360
 
@@ -519,8 +520,15 @@ def _campaign(pt: Painter, top: int, bottom_y: int) -> None:
     visible = max((y1 - y0 - 22) // LINE_H, 1)
     maxfirst = max(len(rows) - visible, 0)
     first = min(max(p.scroll.get("camp") or 0, 0), maxfirst)
-    for i, (cells, tag) in enumerate(rows[first:first + visible]):
+    sel = set(p.camp_sel)
+    for i, row in enumerate(rows[first:first + visible]):
+        cells, tag = row[0], row[1]
+        key = row[2] if len(row) > 2 else None
         yy = y0 + 20 + i * LINE_H
+        if key in sel:
+            d.rectangle((13, yy - 1, W - 22, yy + LINE_H - 2), fill=SELECT)
+        if key is not None and len(row) > 3 and row[3]:          # Zeile mit Sprungziel: Klick -> Kamera
+            pt.hots.append(Hot(13, yy - 1, W - 22, yy + LINE_H - 2, ("camp_row", key)))
         col = CAMP_TAG_COLOR.get(tag, TEXT)
         for cell, (cx, cw) in zip(cells, xs):
             d.text((cx, yy), _fit(str(cell), f11, cw - 6), font=f11, fill=col)

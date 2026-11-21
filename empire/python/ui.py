@@ -962,6 +962,7 @@ class App(tk.Tk):
         sb = ttk.Scrollbar(tab, command=self.camp_tree.yview)
         sb.grid(row=2, column=1, sticky="ns", pady=(6, 0))
         self.camp_tree["yscrollcommand"] = sb.set
+        self.camp_tree.bind("<<TreeviewSelect>>", self._campaign_select)
         self.camp_tree.tag_configure("urgent", foreground="#b00020")
         self.camp_tree.tag_configure("warn", foreground="#9a6700")
         self.camp_tree.tag_configure("muted", foreground="#888888")
@@ -985,6 +986,22 @@ class App(tk.Tk):
             self._overlay_note("Kampagne: Aktualisierung angefordert (dauert 1-3 s, nur im eigenen Zug)")
         except OSError as e:
             self._overlay_note(f"Kampagne: Anforderung nicht moeglich: {e}")
+
+    def _campaign_select(self, _event=None) -> None:
+        """Zeilenklick: Kamera im Spiel auf Armee/Flotte/Agent/Feind, Region oder Bauplatz (beim naechsten Takt, 1 s)."""
+        sel = self.camp_tree.selection()
+        if len(sel) != 1:
+            return
+        v = self._camp_views.get(self.camp_view_var.get())
+        target = v.targets.get(sel[0]) if v else None
+        d = self._overlay_dir()
+        if not target or d is None or sel[0] == getattr(self, "_camp_zoomed", None):
+            return
+        self._camp_zoomed = sel[0]
+        try:
+            (d / "campaign_zoom.txt").write_text(target + "\n", encoding="utf-8")
+        except OSError:
+            pass
 
     def _campaign_view_changed(self) -> None:
         self.s["campaign_view"] = self.camp_view_var.get()
@@ -1141,10 +1158,11 @@ class App(tk.Tk):
             camp_header=self._camp_header_text, camp_view=self.camp_view_var.get(),
             camp_cols=tuple(self._camp_views[self.camp_view_var.get()].columns)
             if self.camp_view_var.get() in self._camp_views else (),
-            camp_rows=tuple((cells, self._camp_views[self.camp_view_var.get()].tags.get(k, ""))
+            camp_rows=tuple((cells, self._camp_views[self.camp_view_var.get()].tags.get(k, ""), k,
+                             bool(self._camp_views[self.camp_view_var.get()].targets.get(k)))
                             for k, cells in self._camp_views[self.camp_view_var.get()].rows)
             if self.camp_view_var.get() in self._camp_views else (),
-            camp_fog=bool(self.camp_fog_var.get()),
+            camp_fog=bool(self.camp_fog_var.get()), camp_sel=tuple(self.camp_tree.selection()),
             focus=self._ov_focus, caret=self._ov_caret, review=self._ov_review_data(),
             width=self._ov_geom()[2], height=self._ov_geom()[3])
 
@@ -1406,6 +1424,13 @@ class App(tk.Tk):
         elif k == "m_effort":
             self.effort_var.set(a[1])
             self._schedule_save()
+        elif k == "camp_row":                               # Kampagne: Zeilenklick im Overlay -> Kamera
+            tree = self.camp_tree
+            if tree.exists(a[1]):
+                self._camp_zoomed = None                    # erneuter Klick springt erneut
+                tree.selection_set(a[1])
+                tree.see(a[1])
+                self._campaign_select()
         elif k == "camp_view":                              # Kampagne: Ansicht der Liste
             self.camp_view_var.set(a[1])
             self._campaign_view_changed()

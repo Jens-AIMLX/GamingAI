@@ -3,10 +3,10 @@ Spalten + Zeilen mit festem Schluessel (die Liste wird an Ort und Stelle aktuali
 Nebel des Krieges wie im Bericht: ohne include_fog nur sichtbare Feinde, verborgene nirgends."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .report import (FULL_STACK, PRIO_NAME, _dict, _list, _money, _num, enemy_armies, finances, order_totals,
-                     recommendations)
+                     recommendations, strength, target_pos, target_region, target_slot)
 
 VIEWS = ["Empfehlungen", "Militär", "Regionen", "Bauplätze", "Forschung", "Feinde", "Diplomatie"]
 
@@ -16,6 +16,7 @@ class View:
     columns: list[tuple[str, int]]          # (Ueberschrift, relative Breite)
     rows: list[tuple[str, tuple]]           # (fester Schluessel, Zellen als Text)
     tags: dict[str, str]                    # Schluessel -> "urgent" / "warn" / "muted"
+    targets: dict[str, str] = field(default_factory=dict)   # Schluessel -> Kamerasprung (Zeile in campaign_zoom.txt)
 
 
 def header(st: dict) -> str:
@@ -38,30 +39,49 @@ def _n(v) -> str:
 
 
 def _recommendations(st: dict, fog: bool) -> View:
-    rows, tags = [], {}
+    rows, tags, targets = [], {}, {}
     for i, a in enumerate(recommendations(st, fog)):
         key = f"r:{a.area}:{a.text[:60]}"
         if any(k == key for k, _ in rows):
             key += f":{i}"
         rows.append((key, (PRIO_NAME[a.prio], a.area, a.text, a.reason)))
         tags[key] = {1: "urgent", 2: "", 3: "muted"}[a.prio]
-    return View([("Priorität", 9), ("Bereich", 10), ("Maßnahme", 50), ("Grund", 31)], rows, tags)
+        if a.target:
+            targets[key] = a.target
+    return View([("Priorität", 9), ("Bereich", 10), ("Maßnahme", 50), ("Grund", 31)], rows, tags, targets)
+
+
+def _composition(sg: dict | None) -> str:
+    """Zusammensetzung kurz: "8 Linieninfanterie, 2 Kavallerie, 2 Artillerie" (Klassennamen aus dem Spiel)."""
+    if not sg:
+        return ""
+    return ", ".join(f"{n} {k}" for k, n in sg["classes"][:4]) + (" …" if len(sg["classes"]) > 4 else "")
 
 
 def _military(st: dict) -> View:
-    rows, tags = [], {}
+    rows, tags, targets = [], {}, {}
     for kind, label in (("armies", "Armee"), ("navies", "Flotte"), ("agents", None)):
         for i, c in enumerate(sorted(_list(st.get(kind)), key=lambda c: -_num(c.get("Soldiers")))):
             art = label or str(c.get("AgentType") or "Agent")
             key = f"{kind}:{c.get('Name')}:{i}"
             ap = (f"{int(_num(c.get('ActionPoints')))}/{int(_num(c.get('ActionPointsPerTurn')))}"
                   if c.get("ActionPointsPerTurn") else "")
+            sg = strength(c) if label else None
+            stren = ""
+            if sg:
+                stren = f"{sg['pct']:.0f} %" + (f" ({sg['hurt']}×)" if sg["hurt"] else "")
             rows.append((key, (str(c.get("Name", "")), art, str(c.get("Location", "")),
-                               _n(c.get("Soldiers")) if label else "", _n(c.get("Units")) if label else "", ap)))
+                               _n(c.get("Soldiers")) if label else "", _n(c.get("Units")) if label else "", stren,
+                               _composition(sg), ap)))
             if label == "Armee" and 0 < _num(c.get("Units")) < FULL_STACK // 2:
                 tags[key] = "warn"
-    return View([("Name", 24), ("Art", 12), ("Ort", 24), ("Soldaten", 12), ("Einheiten", 12), ("Bewegung", 16)],
-                rows, tags)
+            if sg and sg["pct"] < 70:
+                tags[key] = "urgent" if sg["pct"] < 50 else "warn"
+            t = target_pos(c)
+            if t:
+                targets[key] = t
+    return View([("Name", 18), ("Art", 9), ("Ort", 16), ("Soldaten", 9), ("Einheiten", 8), ("Stärke", 9),
+                 ("Zusammensetzung", 30), ("Bewegung", 9)], rows, tags, targets)
 
 
 def _worst(r: dict) -> float:
@@ -70,7 +90,7 @@ def _worst(r: dict) -> float:
 
 
 def _regions(st: dict) -> View:
-    rows, tags = [], {}
+    rows, tags, targets = [], {}, {}
     for r in sorted(_list(st.get("regions")), key=_worst):
         up, lo = order_totals(r)
         key = f"reg:{r.get('Name')}"
@@ -86,8 +106,10 @@ def _regions(st: dict) -> View:
         w = _worst(r)
         if w < 0:
             tags[key] = "urgent" if w <= -3 else "warn"
+        if r.get("Name"):
+            targets[key] = target_region(r.get("Name"))
     return View([("Region", 22), ("Siedlung", 18), ("Bevölkerung", 14), ("Ordnung O/U", 14), ("Steuern O/U", 14),
-                 ("Wohlstand", 18)], rows, tags)
+                 ("Wohlstand", 18)], rows, tags, targets)
 
 
 def _bclass(b: dict) -> int:
@@ -101,7 +123,7 @@ def _bclass(b: dict) -> int:
 
 
 def _buildings(st: dict) -> View:
-    rows, tags = [], {}
+    rows, tags, targets = [], {}, {}
     for i, b in enumerate(sorted(_list(st.get("buildings")),
                                  key=lambda b: (_bclass(b), str(b.get("region")), str(b.get("location"))))):
         cls = _bclass(b)
@@ -118,30 +140,39 @@ def _buildings(st: dict) -> View:
             tags[key] = "urgent" if b["health"] < 50 else "warn"
         elif cls == 3:
             tags[key] = "muted"
-    return View([("Region", 22), ("Ort", 20), ("Gebäude", 32), ("Stufe", 10), ("Zustand", 10)], rows, tags)
+        t = target_slot(b.get("region_key"), b.get("slot_key"))
+        if t:
+            targets[key] = t
+    return View([("Region", 22), ("Ort", 20), ("Gebäude", 32), ("Stufe", 10), ("Zustand", 10)], rows, tags, targets)
 
 
 def _research(st: dict) -> View:
-    rows, tags = [], {}
+    rows, tags, targets = [], {}, {}
     for i, u in enumerate(_list(st.get("research"))):
         key = f"uni:{u.get('RegionKey')}:{i}"
         rows.append((key, (str(u.get("Name", "")), str(u.get("RegionKey", "")), str(u.get("technology") or "- nichts -"),
                            str(u.get("turns_left", "")) if u.get("technology") else "")))
         if not u.get("technology"):
             tags[key] = "urgent"
-    return View([("Universität", 26), ("Region", 22), ("Technologie", 38), ("Züge", 10)], rows, tags)
+        t = target_slot(u.get("RegionKey"), u.get("SlotKey"))
+        if t:
+            targets[key] = t
+    return View([("Universität", 26), ("Region", 22), ("Technologie", 38), ("Züge", 10)], rows, tags, targets)
 
 
 def _enemies(st: dict, fog: bool) -> View:
-    rows, tags = [], {}
+    rows, tags, targets = [], {}, {}
     for i, e in enumerate(sorted(enemy_armies(st, fog), key=lambda e: (not e["in_own_region"], e["distance"]))):
         key = f"en:{e.get('faction')}:{e.get('Name')}:{i}"
         where = "in eigener Region" if e["in_own_region"] else ("nahe eigener Truppen" if e["visible"] else "im Nebel")
         rows.append((key, (str(e.get("faction", "")), str(e.get("Name", "")), str(e.get("Location", "")),
                            _n(e.get("Soldiers")), _n(e.get("Units")), where)))
         tags[key] = "urgent" if e["in_own_region"] else ("muted" if not e["visible"] else "warn")
+        t = target_pos(e)
+        if t:
+            targets[key] = t
     return View([("Fraktion", 14), ("Name", 22), ("Ort", 20), ("Soldaten", 12), ("Einheiten", 10), ("Lage", 20)],
-                rows, tags)
+                rows, tags, targets)
 
 
 def _diplomacy(st: dict) -> View:

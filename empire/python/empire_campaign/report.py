@@ -46,12 +46,45 @@ class Advice:
     area: str           # Finanzen, Ordnung, Bau, Forschung, Militaer, Diplomatie, Lage
     text: str
     reason: str = ""
+    target: str = ""    # Kamerasprung (campaign_zoom.txt): "pos\tX\tY", "slot\tregion_key\tslot_key", "region\tName"
 
     def line(self) -> str:
         return f"[{PRIO_NAME[self.prio]}] {self.area}: {self.text}" + (f" - {self.reason}" if self.reason else "")
 
 
 # ---------------- Laden und Hilfen ----------------
+def target_pos(c: dict) -> str:
+    """Sprungziel einer Figur (Armee, Flotte, Agent, Feind) - nur Kartenposition, kein Zeiger."""
+    x, y = c.get("PosX"), c.get("PosY")
+    return f"pos\t{x}\t{y}" if isinstance(x, (int, float)) and isinstance(y, (int, float)) else ""
+
+
+def target_slot(region_key, slot_key) -> str:
+    return f"slot\t{region_key}\t{slot_key}" if region_key and slot_key else ""
+
+
+def target_region(name) -> str:
+    return f"region\t{name}" if name else ""
+
+
+def strength(c: dict) -> dict | None:
+    """Staerke einer Armee/Flotte aus ihren Einheiten (Erfassung 'armeeinhalt'): Maenner/Soll, Anteil, beschaedigte
+    bzw. unterbesetzte Einheiten, Kosten zum Auffuellen/Reparieren, Zusammensetzung nach Klasse (Spielnamen)."""
+    units = [u for u in _list(c.get("units")) if isinstance(u, dict)]
+    if not units:
+        return None
+    men = sum(_num(u.get("Men")) for u in units)
+    full = sum(_num(u.get("MaxMen")) or _num(u.get("Men")) for u in units)
+    hurt = [u for u in units if u.get("NeedsRepair") or (_num(u.get("MaxMen")) and _num(u.get("Men")) < _num(u.get("MaxMen")))]
+    classes: dict[str, int] = {}
+    for u in units:
+        k = str(u.get("Class") or u.get("Name") or "?")
+        classes[k] = classes.get(k, 0) + 1
+    return {"men": men, "full": full, "pct": 100 * men / full if full else 100.0, "hurt": len(hurt),
+            "cost": sum(_num(u.get("RepairCost")) for u in units if u.get("NeedsRepair")),
+            "classes": sorted(classes.items(), key=lambda kv: -kv[1]),
+            "upkeep": sum(_num(u.get("UpkeepCost")) for u in units)}
+
 def load_state(path: Path) -> dict | None:
     try:
         return json.loads(path.read_text(encoding="utf-8", errors="replace"))
@@ -280,7 +313,7 @@ def recommendations(st: dict, include_fog: bool = False) -> list[Advice]:
             fix.append("Garnison verstärken / Ordnungsgebäude bauen")
             A.append(Advice(1 if worst <= -3 else 2, "Ordnung",
                             f"{r.get('Name')} ({r.get('Settlement')}): Unzufriedenheit {int(worst)} - " + "; ".join(fix),
-                            "Ursachen: " + ", ".join(issues[:3]) if issues else ""))
+                            "Ursachen: " + ", ".join(issues[:3]) if issues else "", target_region(r.get("Name"))))
         elif not r.get("Taxed", True) and worst >= 3:
             A.append(Advice(3, "Finanzen", f"{r.get('Name')} ist steuerfrei, aber ruhig (Ordnung {int(worst)})",
                             "wieder besteuern bringt Einnahmen"))
@@ -290,7 +323,8 @@ def recommendations(st: dict, include_fog: bool = False) -> list[Advice]:
                     key=lambda b: b["health"]):
         A.append(Advice(1 if b["health"] < 50 else 2, "Bau",
                         f"{b.get('name')} in {b.get('location')} ({b.get('region')}) reparieren - Zustand {int(b['health'])}%",
-                        "beschädigte Gebäude bringen weniger oder nichts"))
+                        "beschädigte Gebäude bringen weniger oder nichts",
+                        target_slot(b.get("region_key"), b.get("slot_key"))))
     empty_by_region: dict[str, list[str]] = {}
     for b in bl:
         if b.get("building_key") == "empty":
@@ -315,13 +349,29 @@ def recommendations(st: dict, include_fog: bool = False) -> list[Advice]:
     for u in _list(st.get("research")):
         if not u.get("technology"):
             A.append(Advice(1, "Forschung", f"{u.get('Name')} ({u.get('RegionKey')}) forscht nichts",
-                            "Forschung zuweisen - ungenutzte Universitäten verschenken Fortschritt"))
+                            "Forschung zuweisen - ungenutzte Universitäten verschenken Fortschritt",
+                            target_slot(u.get("RegionKey"), u.get("SlotKey"))))
     # Militaer
     for a in _list(st.get("armies")):
         units = int(_num(a.get("Units")))
         if 0 < units < FULL_STACK // 2:
             A.append(Advice(3, "Militär", f"Armee {a.get('Name')} in {a.get('Location')} hat nur {units} Einheiten",
-                            "auffüllen oder mit einer anderen Armee vereinigen"))
+                            "auffüllen oder mit einer anderen Armee vereinigen", target_pos(a)))
+        sg = strength(a)
+        if sg and sg["pct"] < 70:
+            A.append(Advice(2 if sg["pct"] < 50 else 3, "Militär",
+                            f"Armee {a.get('Name')} in {a.get('Location')} nur bei {sg['pct']:.0f} % Sollstärke "
+                            f"({sg['hurt']} Einheiten unterbesetzt)",
+                            "in eigener Region stehen lassen, damit sie sich auffüllt"
+                            + (f" - Auffüllen kostet {_money(sg['cost'])}" if sg["cost"] else ""), target_pos(a)))
+    for n in _list(st.get("navies")):
+        sg = strength(n)
+        if sg and sg["hurt"]:
+            A.append(Advice(2 if sg["pct"] < 60 else 3, "Militär",
+                            f"Flotte {n.get('Name')} bei {n.get('Location')}: {sg['hurt']} Schiffe beschädigt "
+                            f"({sg['pct']:.0f} % Besatzung)",
+                            "in einen eigenen Hafen zur Reparatur"
+                            + (f" - kostet {_money(sg['cost'])}" if sg["cost"] else ""), target_pos(n)))
     own_by_place: dict[str, float] = {}
     for a in _list(st.get("armies")):
         own_by_place[str(a.get("Location", "")).lower()] = own_by_place.get(str(a.get("Location", "")).lower(), 0) + _num(a.get("Soldiers"))
@@ -334,10 +384,11 @@ def recommendations(st: dict, include_fog: bool = False) -> list[Advice]:
             prio = 1 if _num(e.get("Soldiers")) > mine else 2
             A.append(Advice(prio, "Militär", f"Feindarmee {e.get('Name')} ({e.get('faction')}, {int(_num(e.get('Soldiers')))} "
                             f"Soldaten) steht in eigener Region {loc}" + ("" if e["visible"] else " [im Nebel]"),
-                            f"eigene Truppen dort: {int(mine)} Soldaten"))
+                            f"eigene Truppen dort: {int(mine)} Soldaten", target_pos(e)))
         elif e["distance"] <= VIS_RADIUS and _num(e.get("Soldiers")) >= 500:
             A.append(Advice(2, "Militär", f"Feindarmee {e.get('Name')} ({e.get('faction')}, {int(_num(e.get('Soldiers')))} "
-                            f"Soldaten) nahe eigener Truppen bei {loc}" + ("" if e["visible"] else " [im Nebel]")))
+                            f"Soldaten) nahe eigener Truppen bei {loc}" + ("" if e["visible"] else " [im Nebel]"),
+                            "", target_pos(e)))
     # Ereignisse
     ev = _dict(st.get("events"))
     for key, prio, text in (("RegionRebels", 1, "Aufstand in einer eigenen Region"),
