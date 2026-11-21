@@ -18,6 +18,12 @@ class View:
     rows: list[tuple[str, tuple]]           # (fester Schluessel, Zellen als Text)
     tags: dict[str, str]                    # Schluessel -> "urgent" / "warn" / "muted"
     targets: dict[str, str] = field(default_factory=dict)   # Schluessel -> Kamerasprung (Zeile in campaign_zoom.txt)
+    link_col: int = -1                      # Spalte mit dem Link (nur ein Klick darauf springt); -1 = keine
+    link_cols: dict[str, int] = field(default_factory=dict)  # abweichende Link-Spalte je Zeile (Berater)
+
+    def link_of(self, key: str) -> int:
+        """Spalte des Links dieser Zeile oder -1 (Zeile ohne Sprungziel)."""
+        return self.link_cols.get(key, self.link_col) if key in self.targets else -1
 
 
 def header(st: dict) -> str:
@@ -49,7 +55,7 @@ def _recommendations(st: dict, fog: bool) -> View:
         tags[key] = {1: "urgent", 2: "", 3: "muted"}[a.prio]
         if a.target:
             targets[key] = a.target
-    return View([("Priorität", 9), ("Bereich", 10), ("Maßnahme", 50), ("Grund", 31)], rows, tags, targets)
+    return View([("Priorität", 9), ("Bereich", 10), ("Maßnahme", 50), ("Grund", 31)], rows, tags, targets, 2)
 
 
 def _composition(sg: dict | None) -> str:
@@ -82,7 +88,7 @@ def _military(st: dict) -> View:
             if t:
                 targets[key] = t
     return View([("Name", 18), ("Art", 9), ("Ort", 16), ("Soldaten", 9), ("Einheiten", 8), ("Stärke", 9),
-                 ("Zusammensetzung", 30), ("Bewegung", 9)], rows, tags, targets)
+                 ("Zusammensetzung", 30), ("Bewegung", 9)], rows, tags, targets, 0)
 
 
 def _worst(r: dict) -> float:
@@ -110,7 +116,7 @@ def _regions(st: dict) -> View:
         if r.get("Name"):
             targets[key] = target_region(r.get("Name"))
     return View([("Region", 22), ("Siedlung", 18), ("Bevölkerung", 14), ("Ordnung O/U", 14), ("Steuern O/U", 14),
-                 ("Wohlstand", 18)], rows, tags, targets)
+                 ("Wohlstand", 18)], rows, tags, targets, 0)
 
 
 def _bclass(b: dict) -> int:
@@ -144,7 +150,7 @@ def _buildings(st: dict) -> View:
         t = target_slot(b.get("region_key"), b.get("slot_key"))
         if t:
             targets[key] = t
-    return View([("Region", 22), ("Ort", 20), ("Gebäude", 32), ("Stufe", 10), ("Zustand", 10)], rows, tags, targets)
+    return View([("Region", 22), ("Ort", 20), ("Gebäude", 32), ("Stufe", 10), ("Zustand", 10)], rows, tags, targets, 1)
 
 
 def _research(st: dict) -> View:
@@ -158,7 +164,7 @@ def _research(st: dict) -> View:
         t = target_slot(u.get("RegionKey"), u.get("SlotKey"))
         if t:
             targets[key] = t
-    return View([("Universität", 26), ("Region", 22), ("Technologie", 38), ("Züge", 10)], rows, tags, targets)
+    return View([("Universität", 26), ("Region", 22), ("Technologie", 38), ("Züge", 10)], rows, tags, targets, 0)
 
 
 def _enemies(st: dict, fog: bool) -> View:
@@ -173,7 +179,7 @@ def _enemies(st: dict, fog: bool) -> View:
         if t:
             targets[key] = t
     return View([("Fraktion", 14), ("Name", 22), ("Ort", 20), ("Soldaten", 12), ("Einheiten", 10), ("Lage", 20)],
-                rows, tags, targets)
+                rows, tags, targets, 1)
 
 
 def _diplomacy(st: dict) -> View:
@@ -252,7 +258,7 @@ def advisor_view(history: list, tmap: dict[str, str], busy: str = "", error: str
     history: advisor.Exchange; tmap: advisor.targets(st)."""
     from .advisor import mentions, target_for
 
-    rows, tags, targets = [], {}, {}
+    rows, tags, targets, link_cols = [], {}, {}, {}
 
     def add(key, cells, tag="", target=""):
         rows.append((key, cells))
@@ -263,7 +269,7 @@ def advisor_view(history: list, tmap: dict[str, str], busy: str = "", error: str
     def links(prefix, text):
         """Genannte Orte/Armeen als eigene, anklickbare Zeilen (blau, unterstrichen = Link)."""
         for j, (name, t) in enumerate(mentions(text, tmap)):
-            add(f"{prefix}:{j}", ("", "↗ Orte" if j == 0 else "", name, ""), "link", t)
+            add(f"{prefix}:{j}", ("", "Orte" if j == 0 else "", name, ""), "link", t)
 
     if busy:
         add("adv:busy", ("", "Berater", busy, ""), "warn")
@@ -284,13 +290,17 @@ def advisor_view(history: list, tmap: dict[str, str], busy: str = "", error: str
         for j, act in enumerate(sorted(a.actions, key=lambda x: x.prio)):
             pr = PRIO_NAME.get(act.prio, str(act.prio))
             t = target_for(act.where, tmap)
-            where = (f"↗ {act.where}" if t else act.where) if act.where else ""
-            add(f"adv:{i}:a:{j}", (pr, act.area, act.action, (where + " – " if where else "") + act.reason),
+            key = f"adv:{i}:a:{j}"
+            add(key, (pr, act.area, act.action, act.where if t else act.reason + (f" ({act.where})" if act.where else "")),
                 {1: "urgent", 2: "", 3: "muted"}.get(act.prio, ""), t)
+            if t:
+                link_cols[key] = 3                 # Ort als Link; die Begruendung folgt als eigene Zeile
+                add(key + ":why", ("", "", "", act.reason), "muted")
         for j, r in enumerate(a.risks):
             for k, line in enumerate(_wrap(r)):
                 add(f"adv:{i}:r:{j}:{k}", ("", "Risiko" if j == 0 and k == 0 else "", line, ""), "warn")
         links(f"adv:{i}:rl", " ".join(a.risks))
         if n < len(history) - 1:
             add(f"adv:{i}:sep", ("", "", "", ""))
-    return View([("Priorität", 9), ("Bereich", 10), ("Maßnahme", 50), ("Grund / Ort", 31)], rows, tags, targets)
+    return View([("Priorität", 9), ("Bereich", 10), ("Maßnahme", 50), ("Grund / Ort", 31)], rows, tags, targets, 2,
+                link_cols)

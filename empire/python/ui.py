@@ -983,7 +983,7 @@ class App(tk.Tk):
         sb = ttk.Scrollbar(tab, command=self.camp_tree.yview)
         sb.grid(row=3, column=1, sticky="ns", pady=(6, 0))
         self.camp_tree["yscrollcommand"] = sb.set
-        self.camp_tree.bind("<<TreeviewSelect>>", self._campaign_select)
+        self.camp_tree.bind("<ButtonRelease-1>", self._campaign_click)   # Sprung nur ueber die Link-Zelle (↗)
         self.camp_tree.bind("<Control-c>", lambda e: self._campaign_copy())
         menu = tk.Menu(self.camp_tree, tearoff=0)
         menu.add_command(label="Markierte Zeilen kopieren", command=self._campaign_copy)
@@ -1014,21 +1014,28 @@ class App(tk.Tk):
         except OSError as e:
             self._overlay_note(f"Kampagne: Anforderung nicht moeglich: {e}")
 
-    def _campaign_select(self, _event=None) -> None:
-        """Zeilenklick: Kamera im Spiel auf Armee/Flotte/Agent/Feind, Region oder Bauplatz (beim naechsten Takt, 1 s)."""
-        sel = self.camp_tree.selection()
-        if len(sel) != 1:
-            return
+    def _campaign_click(self, event) -> None:
+        """Klick in die Liste: nur ein Klick auf die Link-Zelle (mit ↗) springt im Spiel - Markieren allein nicht."""
+        tree = self.camp_tree
+        key = tree.identify_row(event.y)
+        col = tree.identify_column(event.x)           # "#1", "#2", ...
+        if key and col.startswith("#") and col[1:].isdigit():
+            self._campaign_link(key, int(col[1:]) - 1)
+
+    def _campaign_link(self, key: str, col: int) -> bool:
+        """Link in Zeile key, Spalte col angeklickt: Kamera im Spiel auf Armee/Flotte/Agent/Feind, Region oder
+        Bauplatz (beim naechsten Takt, 1 s). Liefert True, wenn gesprungen wird."""
         v = self._camp_views.get(self.camp_view_var.get())
-        target = v.targets.get(sel[0]) if v else None
+        if v is None or col < 0 or v.link_of(key) != col:
+            return False
         d = self._overlay_dir()
-        if not target or d is None or sel[0] == getattr(self, "_camp_zoomed", None):
-            return
-        self._camp_zoomed = sel[0]
+        if d is None:
+            return False
         try:
-            (d / "campaign_zoom.txt").write_text(target + "\n", encoding="utf-8")
+            (d / "campaign_zoom.txt").write_text(v.targets[key] + "\n", encoding="utf-8")
         except OSError:
-            pass
+            return False
+        return True
 
     def _campaign_copy(self, whole: bool = False) -> None:
         """Markierte Zeilen (sonst die ganze Ansicht, wie gefiltert/sortiert) in die Zwischenablage: Kopfzeile und
@@ -1298,6 +1305,9 @@ class App(tk.Tk):
                 tree.delete(iid)
         for i, (key, cells) in enumerate(rows):
             tag = v.tags.get(key) or ""
+            lc = v.link_of(key)
+            if 0 <= lc < len(cells) and str(cells[lc]):        # Link-Zelle sichtbar machen
+                cells = tuple("↗ " + str(c) if n == lc else c for n, c in enumerate(cells))
             if tree.exists(key):
                 if tuple(tree.item(key, "values")) != tuple(cells):
                     tree.item(key, values=cells, tags=(tag,))
@@ -1329,7 +1339,7 @@ class App(tk.Tk):
             camp_cols=tuple(self._camp_views[self.camp_view_var.get()].columns)
             if self.camp_view_var.get() in self._camp_views else (),
             camp_rows=tuple((cells, self._camp_views[self.camp_view_var.get()].tags.get(k, ""), k,
-                             bool(self._camp_views[self.camp_view_var.get()].targets.get(k)))
+                             self._camp_views[self.camp_view_var.get()].link_of(k))
                             for k, cells in self._camp_rows(self._camp_views[self.camp_view_var.get()]))
             if self.camp_view_var.get() in self._camp_views else (),
             camp_fog=bool(self.camp_fog_var.get()), camp_sel=tuple(self.camp_tree.selection()),
@@ -1620,13 +1630,14 @@ class App(tk.Tk):
         elif k == "camp_important":                         # Kampagne: nur dringende und wichtige
             self.camp_important_var.set(not self.camp_important_var.get())
             self._campaign_important_changed()
-        elif k == "camp_row":                               # Kampagne: Zeilenklick im Overlay -> Kamera
+        elif k in ("camp_row", "camp_link"):                # Kampagne: Zeile markieren; Link -> Kamera
             tree = self.camp_tree
             if tree.exists(a[1]):
-                self._camp_zoomed = None                    # erneuter Klick springt erneut
                 tree.selection_set(a[1])
                 tree.see(a[1])
-                self._campaign_select()
+            if k == "camp_link":
+                v = self._camp_views.get(self.camp_view_var.get())
+                self._campaign_link(a[1], v.link_of(a[1]) if v else -1)
         elif k == "camp_view":                              # Kampagne: Ansicht der Liste
             self.camp_view_var.set(a[1])
             self._campaign_view_changed()

@@ -560,14 +560,19 @@ def _campaign(pt: Painter, top: int, bottom_y: int) -> None:
         yy = y0 + 20 + i * LINE_H
         if key in sel:
             d.rectangle((13, yy - 1, W - 22, yy + LINE_H - 2), fill=SELECT)
-        if key is not None and len(row) > 3 and row[3]:          # Zeile mit Sprungziel: Klick -> Kamera
-            pt.hots.append(Hot(13, yy - 1, W - 22, yy + LINE_H - 2, ("camp_row", key)))
+        lc = row[3] if len(row) > 3 and isinstance(row[3], int) and not isinstance(row[3], bool) else -1
         col = CAMP_TAG_COLOR.get(tag, TEXT)
-        for cell, (cx, cw) in zip(cells, xs):
+        for n, (cell, (cx, cw)) in enumerate(zip(cells, xs)):
             txt = _fit(str(cell), f11, cw - 6)
-            d.text((cx, yy), txt, font=f11, fill=col)
-            if tag == "link" and txt.strip() and not txt.startswith("↗"):     # Link: unterstreichen
-                d.line((cx, yy + 14, cx + f11.getlength(txt), yy + 14), fill=col, width=1)
+            if n == lc and txt.strip():                  # Link: blau, unterstrichen, nur er springt (aktive Wahl)
+                tw = f11.getlength(txt)
+                d.text((cx, yy), txt, font=f11, fill=BLUE)
+                d.line((cx, yy + 14, cx + tw, yy + 14), fill=BLUE, width=1)
+                pt.hots.append(Hot(int(cx) - 2, yy - 1, int(cx + tw) + 2, yy + LINE_H - 2, ("camp_link", key)))
+            else:
+                d.text((cx, yy), txt, font=f11, fill=col)
+        if key is not None:                              # Rest der Zeile: nur markieren
+            pt.hots.append(Hot(13, yy - 1, W - 22, yy + LINE_H - 2, ("camp_row", key)))
     bar = (W - 21, y0 + 20, W - 15, y1 - 2)
     pt.scrollbar(W - 21, y0 + 20, y1 - y0 - 22, len(rows), visible, first)
     pt.hots.append(Hot(12, y0 + 20, W - 12, y1, ("scroll", "camp"), total=len(rows), visible=visible, first=first,
