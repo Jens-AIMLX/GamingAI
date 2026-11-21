@@ -155,7 +155,12 @@ do
 		end
 		local function state_probe(context)
 			if state_done or CampaignUI == nil or not exists("campaign_probe2.on") then return end
-			local ok_local, is_local = pcall(function() return conditions.FactionIsLocal(context) end)
+			local ok_local, is_local
+			if context == nil then                     -- aus dem Takt: nur im eigenen Zug
+				ok_local, is_local = pcall(CampaignUI.IsPlayersTurn)
+			else
+				ok_local, is_local = pcall(function() return conditions.FactionIsLocal(context) end)
+			end
 			if not (ok_local and is_local) then return end
 			state_done = true
 			local skip, open = {}, nil
@@ -328,6 +333,11 @@ do
 			prog:close()
 		end
 		pcall(es.AddEventCallBack, "FactionTurnStart", function(context) pcall(state_probe, context) end)
+		-- Nicht rundenbasiert: nach dem Laden laeuft die Probe beim ersten Timer nach UICreated (der kommt ohne
+		-- Eingabe, ~5 s nach dem Aufbau der Oberflaeche) - wie die Erfassung
+		local probe_ui = false
+		pcall(es.AddEventCallBack, "UICreated", function() probe_ui = true end)
+		pcall(es.AddEventCallBack, "TimeTrigger", function() if probe_ui then pcall(state_probe, nil) end end)
 		-- Probe 6b (nur mit campaign_probe2.on): Leerlauf der Bau-/Forschungsschlangen ueber die Abfragen der Ereignisse
 		-- zu Zugbeginn (wie Beraterskripte): je Ereignis die ersten 12 Kontexte nach campaign_probe6.txt
 		local q_seen = {}
