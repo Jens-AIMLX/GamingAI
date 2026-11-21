@@ -1026,13 +1026,14 @@ class App(tk.Tk):
         """Link in Zeile key, Spalte col angeklickt: Kamera im Spiel auf Armee/Flotte/Agent/Feind, Region oder
         Bauplatz (beim naechsten Takt, 1 s). Liefert True, wenn gesprungen wird."""
         v = self._camp_views.get(self.camp_view_var.get())
-        if v is None or col < 0 or v.link_of(key) != col:
+        target = v.links(key).get(col) if v is not None else None
+        if not target:
             return False
         d = self._overlay_dir()
         if d is None:
             return False
         try:
-            (d / "campaign_zoom.txt").write_text(v.targets[key] + "\n", encoding="utf-8")
+            (d / "campaign_zoom.txt").write_text(target + "\n", encoding="utf-8")
         except OSError:
             return False
         return True
@@ -1305,9 +1306,9 @@ class App(tk.Tk):
                 tree.delete(iid)
         for i, (key, cells) in enumerate(rows):
             tag = v.tags.get(key) or ""
-            lc = v.link_of(key)
-            if 0 <= lc < len(cells) and str(cells[lc]):        # Link-Zelle sichtbar machen
-                cells = tuple("↗ " + str(c) if n == lc else c for n, c in enumerate(cells))
+            lk = v.links(key)
+            if lk:                                             # Link-Zellen sichtbar machen
+                cells = tuple("↗ " + str(c) if n in lk and str(c) else c for n, c in enumerate(cells))
             if tree.exists(key):
                 if tuple(tree.item(key, "values")) != tuple(cells):
                     tree.item(key, values=cells, tags=(tag,))
@@ -1339,7 +1340,7 @@ class App(tk.Tk):
             camp_cols=tuple(self._camp_views[self.camp_view_var.get()].columns)
             if self.camp_view_var.get() in self._camp_views else (),
             camp_rows=tuple((cells, self._camp_views[self.camp_view_var.get()].tags.get(k, ""), k,
-                             self._camp_views[self.camp_view_var.get()].link_of(k))
+                             tuple(sorted(self._camp_views[self.camp_view_var.get()].links(k))))
                             for k, cells in self._camp_rows(self._camp_views[self.camp_view_var.get()]))
             if self.camp_view_var.get() in self._camp_views else (),
             camp_fog=bool(self.camp_fog_var.get()), camp_sel=tuple(self.camp_tree.selection()),
@@ -1636,8 +1637,7 @@ class App(tk.Tk):
                 tree.selection_set(a[1])
                 tree.see(a[1])
             if k == "camp_link":
-                v = self._camp_views.get(self.camp_view_var.get())
-                self._campaign_link(a[1], v.link_of(a[1]) if v else -1)
+                self._campaign_link(a[1], a[2] if len(a) > 2 else -1)
         elif k == "camp_view":                              # Kampagne: Ansicht der Liste
             self.camp_view_var.set(a[1])
             self._campaign_view_changed()

@@ -20,10 +20,31 @@ class View:
     targets: dict[str, str] = field(default_factory=dict)   # Schluessel -> Kamerasprung (Zeile in campaign_zoom.txt)
     link_col: int = -1                      # Spalte mit dem Link (nur ein Klick darauf springt); -1 = keine
     link_cols: dict[str, int] = field(default_factory=dict)  # abweichende Link-Spalte je Zeile (Berater)
+    extra: dict[str, dict[int, str]] = field(default_factory=dict)   # weitere Link-Zellen je Zeile: Spalte -> Ziel
 
     def link_of(self, key: str) -> int:
-        """Spalte des Links dieser Zeile oder -1 (Zeile ohne Sprungziel)."""
+        """Spalte des Haupt-Links dieser Zeile oder -1 (Zeile ohne Sprungziel)."""
         return self.link_cols.get(key, self.link_col) if key in self.targets else -1
+
+    def links(self, key: str) -> dict[int, str]:
+        """Alle Link-Zellen der Zeile: Spalte -> Kamerasprung (jede Zelle mit Klickziel ist ein Link)."""
+        out = dict(self.extra.get(key, {}))
+        lc = self.link_of(key)
+        if lc >= 0:
+            out[lc] = self.targets[key]
+        return out
+
+
+def places(st: dict, fog: bool = False) -> dict[str, str]:
+    """Ortsname (klein) -> Kamerasprung: Regionen, Siedlungen, Orte der Bauplaetze, Armeen (advisor.targets)."""
+    from .advisor import targets
+    return targets(st, fog)
+
+
+def _place_link(extra: dict, key: str, col: int, name, pl: dict[str, str], fallback: str = "") -> None:
+    t = pl.get(str(name or "").strip().lower()) or fallback
+    if t and str(name or "").strip():
+        extra.setdefault(key, {})[col] = t
 
 
 def header(st: dict) -> str:
@@ -65,8 +86,8 @@ def _composition(sg: dict | None) -> str:
     return ", ".join(f"{n} {k}" for k, n in sg["classes"][:4]) + (" …" if len(sg["classes"]) > 4 else "")
 
 
-def _military(st: dict) -> View:
-    rows, tags, targets = [], {}, {}
+def _military(st: dict, pl: dict[str, str]) -> View:
+    rows, tags, targets, extra = [], {}, {}, {}
     for kind, label in (("armies", "Armee"), ("navies", "Flotte"), ("agents", None)):
         for i, c in enumerate(sorted(_list(st.get(kind)), key=lambda c: -_num(c.get("Soldiers")))):
             art = label or str(c.get("AgentType") or "Agent")
@@ -87,8 +108,9 @@ def _military(st: dict) -> View:
             t = target_pos(c)
             if t:
                 targets[key] = t
+            _place_link(extra, key, 2, c.get("Location"), pl, t)     # Ort: Region/Siedlung, sonst die Position
     return View([("Name", 18), ("Art", 9), ("Ort", 16), ("Soldaten", 9), ("Einheiten", 8), ("Stärke", 9),
-                 ("Zusammensetzung", 30), ("Bewegung", 9)], rows, tags, targets, 0)
+                 ("Zusammensetzung", 30), ("Bewegung", 9)], rows, tags, targets, 0, extra=extra)
 
 
 def _worst(r: dict) -> float:
@@ -97,7 +119,7 @@ def _worst(r: dict) -> float:
 
 
 def _regions(st: dict) -> View:
-    rows, tags, targets = [], {}, {}
+    rows, tags, targets, extra = [], {}, {}, {}
     for r in sorted(_list(st.get("regions")), key=_worst):
         up, lo = order_totals(r)
         key = f"reg:{r.get('Name')}"
@@ -115,8 +137,10 @@ def _regions(st: dict) -> View:
             tags[key] = "urgent" if w <= -3 else "warn"
         if r.get("Name"):
             targets[key] = target_region(r.get("Name"))
+            if r.get("Settlement"):
+                extra[key] = {1: target_region(r.get("Name"))}
     return View([("Region", 22), ("Siedlung", 18), ("Bevölkerung", 14), ("Ordnung O/U", 14), ("Steuern O/U", 14),
-                 ("Wohlstand", 18)], rows, tags, targets, 0)
+                 ("Wohlstand", 18)], rows, tags, targets, 0, extra=extra)
 
 
 def _bclass(b: dict) -> int:
@@ -129,8 +153,8 @@ def _bclass(b: dict) -> int:
     return 3
 
 
-def _buildings(st: dict) -> View:
-    rows, tags, targets = [], {}, {}
+def _buildings(st: dict, pl: dict[str, str]) -> View:
+    rows, tags, targets, extra = [], {}, {}, {}
     for i, b in enumerate(sorted(_list(st.get("buildings")),
                                  key=lambda b: (_bclass(b), str(b.get("region")), str(b.get("location"))))):
         cls = _bclass(b)
@@ -150,25 +174,32 @@ def _buildings(st: dict) -> View:
         t = target_slot(b.get("region_key"), b.get("slot_key"))
         if t:
             targets[key] = t
-    return View([("Region", 22), ("Ort", 20), ("Gebäude", 32), ("Stufe", 10), ("Zustand", 10)], rows, tags, targets, 1)
+        _place_link(extra, key, 0, b.get("region"), pl)
+    return View([("Region", 22), ("Ort", 20), ("Gebäude", 32), ("Stufe", 10), ("Zustand", 10)], rows, tags, targets, 1,
+                extra=extra)
 
 
 def _research(st: dict) -> View:
-    rows, tags, targets = [], {}, {}
+    rows, tags, targets, extra = [], {}, {}, {}
+    names = {str(b.get("region_key")): str(b.get("region")) for b in _list(st.get("buildings")) if b.get("region_key")}
     for i, u in enumerate(_list(st.get("research"))):
         key = f"uni:{u.get('RegionKey')}:{i}"
-        rows.append((key, (str(u.get("Name", "")), str(u.get("RegionKey", "")), str(u.get("technology") or "- nichts -"),
+        rows.append((key, (str(u.get("Name", "")), names.get(str(u.get("RegionKey")), str(u.get("RegionKey", ""))),
+                           str(u.get("technology") or "- nichts -"),
                            str(u.get("turns_left", "")) if u.get("technology") else "")))
         if not u.get("technology"):
             tags[key] = "urgent"
         t = target_slot(u.get("RegionKey"), u.get("SlotKey"))
         if t:
             targets[key] = t
-    return View([("Universität", 26), ("Region", 22), ("Technologie", 38), ("Züge", 10)], rows, tags, targets, 0)
+        if str(u.get("RegionKey")) in names:
+            extra[key] = {1: target_region(names[str(u.get("RegionKey"))])}
+    return View([("Universität", 26), ("Region", 22), ("Technologie", 38), ("Züge", 10)], rows, tags, targets, 0,
+                extra=extra)
 
 
-def _enemies(st: dict, fog: bool) -> View:
-    rows, tags, targets = [], {}, {}
+def _enemies(st: dict, fog: bool, pl: dict[str, str]) -> View:
+    rows, tags, targets, extra = [], {}, {}, {}
     for i, e in enumerate(sorted(enemy_armies(st, fog), key=lambda e: (not e["in_own_region"], e["distance"]))):
         key = f"en:{e.get('faction')}:{e.get('Name')}:{i}"
         where = "in eigener Region" if e["in_own_region"] else ("nahe eigener Truppen" if e["visible"] else "im Nebel")
@@ -178,8 +209,9 @@ def _enemies(st: dict, fog: bool) -> View:
         t = target_pos(e)
         if t:
             targets[key] = t
+        _place_link(extra, key, 2, e.get("Location"), pl, t)
     return View([("Fraktion", 14), ("Name", 22), ("Ort", 20), ("Soldaten", 12), ("Einheiten", 10), ("Lage", 20)],
-                rows, tags, targets, 1)
+                rows, tags, targets, 1, extra=extra)
 
 
 def _diplomacy(st: dict) -> View:
@@ -240,8 +272,9 @@ def _missions(st: dict) -> View:
 
 
 def build(st: dict, include_fog: bool = False) -> dict[str, View]:
-    return {"Empfehlungen": _recommendations(st, include_fog), "Militär": _military(st), "Regionen": _regions(st),
-            "Bauplätze": _buildings(st), "Forschung": _research(st), "Feinde": _enemies(st, include_fog),
+    pl = places(st, include_fog)
+    return {"Empfehlungen": _recommendations(st, include_fog), "Militär": _military(st, pl), "Regionen": _regions(st),
+            "Bauplätze": _buildings(st, pl), "Forschung": _research(st), "Feinde": _enemies(st, include_fog, pl),
             "Diplomatie": _diplomacy(st), "Handel": _trade(st), "Missionen": _missions(st)}
 
 

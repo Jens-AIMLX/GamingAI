@@ -560,15 +560,15 @@ def _campaign(pt: Painter, top: int, bottom_y: int) -> None:
         yy = y0 + 20 + i * LINE_H
         if key in sel:
             d.rectangle((13, yy - 1, W - 22, yy + LINE_H - 2), fill=SELECT)
-        lc = row[3] if len(row) > 3 and isinstance(row[3], int) and not isinstance(row[3], bool) else -1
+        lcs = set(row[3]) if len(row) > 3 and isinstance(row[3], (tuple, list)) else set()
         col = CAMP_TAG_COLOR.get(tag, TEXT)
         for n, (cell, (cx, cw)) in enumerate(zip(cells, xs)):
             txt = _fit(str(cell), f11, cw - 6)
-            if n == lc and txt.strip():                  # Link: blau, unterstrichen, nur er springt (aktive Wahl)
+            if n in lcs and txt.strip():                 # Link: blau, unterstrichen, nur er springt (aktive Wahl)
                 tw = f11.getlength(txt)
                 d.text((cx, yy), txt, font=f11, fill=BLUE)
                 d.line((cx, yy + 14, cx + tw, yy + 14), fill=BLUE, width=1)
-                pt.hots.append(Hot(int(cx) - 2, yy - 1, int(cx + tw) + 2, yy + LINE_H - 2, ("camp_link", key)))
+                pt.hots.append(Hot(int(cx) - 2, yy - 1, int(cx + tw) + 2, yy + LINE_H - 2, ("camp_link", key, n)))
             else:
                 d.text((cx, yy), txt, font=f11, fill=col)
         if key is not None:                              # Rest der Zeile: nur markieren
